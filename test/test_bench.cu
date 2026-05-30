@@ -1,0 +1,325 @@
+/* ─── Test + Benchmark for GB300 RL Runtime ─────────────────────
+ *
+ * Compile with:
+ *   make test       # quick sanity
+ *   make bench      # 1M token stress test
+ *
+ * The test validates the core data-path without requiring GB300
+ * hardware — runs on any CUDA-capable GPU with compute 8.0+. */
+
+#include "ring.h"
+#include "arena.h"
+#include "completion.h"
+#include "prefetch.h"
+#include "sample.h"
+#include <time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <cuda_runtime.h>
+
+/* ─── Declare persistent worker kernel from worker.cu ──────────── */
+__global__ void decode_worker(CommandRing*, KVArena*, CompletionRing*,
+                              SampleState*, uint64_t*);
+
+/* ─── Test helpers ─────────────────────────────────────────────── */
+
+static int
+test_ring_basic(void) {
+  printf("  test_ring_basic ... ");
+
+  CommandRing *ring = ring_create();
+  assert(ring);
+
+  /* CPU: acquire + write + commit */
+  uint32_t pos = ring_acquire(ring, 1);
+  assert(pos != UINT32_MAX);
+  ring->slots[pos].seq_id = 42;
+  ring->slots[pos].kv_block_offset = 7;
+  ring_commit(ring, 1);
+
+  /* GPU-simulated (same thread): consume */
+  Descriptor d;
+  int got = ring_consume(ring, &d);
+  assert(got);
+  assert(d.seq_id == 42);
+  assert(d.kv_block_offset == 7);
+
+  ring_destroy(ring);
+  printf("OK\n");
+  return 0;
+}
+
+static int
+test_ring_full(void) {
+  printf("  test_ring_full ... ");
+
+  CommandRing *ring = ring_create();
+  assert(ring);
+
+  /* fill the ring */
+  uint32_t pos;
+  int count = 0;
+  while ((pos = ring_acquire(ring, 1)) != UINT32_MAX) {
+    ring->slots[pos].seq_id = count;
+    ring_commit(ring, 1);
+    count++;
+  }
+  assert(count > 0); /* we got some slots */
+  printf("capacity = %d, ", count);
+
+  /* drain */
+  Descriptor d;
+  int drained = 0;
+  while (ring_consume(ring, &d))
+    drained++;
+  assert(drained == count);
+  printf("drained = %d OK\n", drained);
+
+  ring_destroy(ring);
+  return 0;
+}
+
+static int
+test_arena_basic(void) {
+  printf("  test_arena_basic ... ");
+
+  KVArena a;
+  arena_init(&a, 64UL << 20, 16384);  /* 64 MB, 16 KB blocks */
+  assert(a.base);
+
+  /* acquire / release cycling */
+  int64_t ids[100];
+  for (int i = 0; i < 100; i++) {
+    ids[i] = arena_acquire(&a);
+    assert(ids[i] >= 0);
+    /* write to fault the page */
+    memset(arena_block_ptr(&a, ids[i]), 0xAB, 128);
+  }
+  for (int i = 0; i < 100; i++)
+    arena_release(&a, ids[i]);
+
+  /* re-acquire to verify reuse */
+  for (int i = 0; i < 100; i++) {
+    int64_t id = arena_acquire(&a);
+    assert(id >= 0);
+  }
+
+  arena_destroy(&a);
+  printf("OK\n");
+  return 0;
+}
+
+static int
+test_completion_ring(void) {
+  printf("  test_completion_ring ... ");
+
+  CompletionRing cr;
+  memset(&cr, 0, sizeof(cr));
+
+  Completion c_in = {.seq_id = 7, .token_id = 123,
+                     .kv_block_offset = 4, .reward_cookie = 0xDEAD};
+  comp_ring_push(&cr, &c_in);
+
+  Completion c_out;
+  int got = comp_ring_poll(&cr, &c_out);
+  assert(got);
+  assert(c_out.seq_id == 7);
+  assert(c_out.token_id == 123);
+  assert(c_out.kv_block_offset == 4);
+  assert(c_out.reward_cookie == 0xDEAD);
+
+  printf("OK\n");
+  return 0;
+}
+
+/* ─── Bench: ring throughput, no GPU ───────────────────────────── */
+
+static void
+bench_ring(void) {
+  const int N = 10000000;  /* 10M iterations */
+  CommandRing *ring = ring_create();
+  assert(ring);
+
+  struct timespec ts0, ts1;
+  clock_gettime(CLOCK_MONOTONIC, &ts0);
+  for (int i = 0; i < N; i++) {
+    uint32_t pos = ring_acquire(ring, 1);
+    if (pos == UINT32_MAX) {
+      Descriptor d;
+      ring_consume(ring, &d);
+      pos = ring_acquire(ring, 1);
+      assert(pos != UINT32_MAX);
+    }
+    ring->slots[pos].seq_id = i;
+    ring_commit(ring, 1);
+    Descriptor d;
+    ring_consume(ring, &d);
+  }
+  clock_gettime(CLOCK_MONOTONIC, &ts1);
+
+  double ns = (double)(ts1.tv_sec - ts0.tv_sec) * 1e9 +
+              (double)(ts1.tv_nsec - ts0.tv_nsec);
+  double ns_per_op = ns / N;
+  printf("  Ring throughput:         %.1f ns/op  (%.0f M ops/s)\n",
+         ns_per_op, 1000.0 / ns_per_op);
+  ring_destroy(ring);
+}
+
+/* ─── Full pipeline GPU test ───────────────────────────────────── */
+
+static void
+bench_full_pipeline(int n_tokens) {
+  printf("\n  Full pipeline (%d tokens) ...\n", n_tokens);
+
+  int dev_id = 0;
+  cudaSetDevice(dev_id);
+  cudaDeviceProp prop;
+  cudaGetDeviceProperties(&prop, dev_id);
+  int sms = prop.multiProcessorCount;
+
+  /* allocate rings */
+  CommandRing    *cmd_ring   = ring_create();
+  CompletionRing *comp_ring  = (CompletionRing *)ring_create();
+  assert(cmd_ring && comp_ring);
+
+  /* KV arena: 256 MB */
+  KVArena arena;
+  arena_init(&arena, 256UL << 20, 16384);
+
+  /* device state */
+  uint64_t *d_step_count;
+  cudaMalloc(&d_step_count, sizeof(uint64_t));
+  cudaMemset(d_step_count, 0, sizeof(uint64_t));
+
+  SampleState *d_sample_st;
+  cudaMalloc(&d_sample_st, sizeof(SampleState));
+  SampleState h_st;
+  memset(&h_st, 0, sizeof(h_st));
+  h_st.rng_state[0] = 42;
+  h_st.rng_state[1] = 42 ^ 0x9e3779b97f4a7c15ULL;
+  h_st.rng_state[2] = (42 << 17) ^ 0x3c6ef372fe94f82aULL;
+  h_st.rng_state[3] = ~42ULL;
+  h_st.temperature   = 1.0f;
+  h_st.top_k         = 50;
+  h_st.top_p         = 0.9f;
+  h_st.vocab_size    = MAX_VOCAB_SIZE;
+  cudaMemcpy(d_sample_st, &h_st, sizeof(SampleState), cudaMemcpyHostToDevice);
+
+  /* launch persistent workers */
+  int smem_size = 3 * 16384;
+  decode_worker<<<sms, 32, smem_size>>>(
+    cmd_ring, &arena, comp_ring, d_sample_st, d_step_count);
+
+  /* pre-acquire KV blocks */
+  int64_t kv_ids[128];
+  for (int i = 0; i < 128; i++)
+    kv_ids[i] = arena_acquire(&arena);
+
+  /* dispatch tokens */
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start);
+
+  for (int i = 0; i < n_tokens; i++) {
+    uint32_t pos = ring_acquire(cmd_ring, 1);
+    if (pos == UINT32_MAX) {
+      /* drain some completions */
+      Completion c;
+      while (comp_ring_poll(comp_ring, &c));
+      pos = ring_acquire(cmd_ring, 1);
+      assert(pos != UINT32_MAX);
+    }
+    Descriptor desc;
+    desc.seq_id            = 1;
+    desc.kv_block_offset   = (uint32_t)(i % 128);
+    desc.num_kv_blocks     = 1;
+    desc.attention_flags   = 0;
+    desc.pad               = 0;
+    desc.output_token_offset = (uint32_t)i;
+    desc.reward_cookie     = i;
+    cmd_ring->slots[pos] = desc;
+    ring_commit(cmd_ring, 1);
+  }
+
+  /* wait for all completions */
+  int completed = 0;
+  while (completed < n_tokens) {
+    Completion c;
+    while (comp_ring_poll(comp_ring, &c))
+      completed++;
+  }
+
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
+  float ms;
+  cudaEventElapsedTime(&ms, start, stop);
+
+  uint64_t steps;
+  cudaMemcpy(&steps, d_step_count, sizeof(steps), cudaMemcpyDeviceToHost);
+
+  printf("  Workers:      %d SMs\n", sms);
+  printf("  Wall time:    %.2f ms\n", ms);
+  printf("  Throughput:   %.0f tokens/s\n", n_tokens / (ms / 1000.0f));
+  printf("  GPU steps:    %lu\n", steps);
+
+  /* shutdown */
+  Descriptor sentinel;
+  memset(&sentinel, 0, sizeof(sentinel));
+  sentinel.seq_id = UINT64_MAX;
+  for (int i = 0; i < sms; i++) {
+    uint32_t pos = ring_acquire(cmd_ring, 1);
+    if (pos != UINT32_MAX) {
+      cmd_ring->slots[pos] = sentinel;
+      ring_commit(cmd_ring, 1);
+    }
+  }
+
+  cudaFree(d_step_count);
+  cudaFree(d_sample_st);
+  ring_destroy(cmd_ring);
+  ring_destroy((CommandRing *)comp_ring);
+  arena_destroy(&arena);
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+}
+
+/* ─── main ─────────────────────────────────────────────────────── */
+
+int
+main(int argc, char **argv) {
+  int bench_mode = 0;
+  int n_tokens   = 100000;
+
+  if (argc > 1 && strcmp(argv[1], "--bench") == 0) {
+    bench_mode = 1;
+    if (argc > 2)
+      n_tokens = atoi(argv[2]);
+  }
+
+  printf("GB300 RL Runtime — Test Suite\n\n");
+
+  if (bench_mode) {
+    printf("── Benchmark mode ──\n\n");
+    bench_ring();
+    cudaSetDevice(0);
+    bench_full_pipeline(n_tokens);
+    printf("\nDone.\n");
+    return 0;
+  }
+
+  /* unit tests */
+  printf("── Unit tests ──\n\n");
+  test_ring_basic();
+  test_ring_full();
+  test_arena_basic();
+  test_completion_ring();
+
+  printf("\n── Quick pipeline test (1000 tokens) ──\n\n");
+  bench_full_pipeline(1000);
+
+  printf("\nAll tests passed.\n");
+  return 0;
+}
