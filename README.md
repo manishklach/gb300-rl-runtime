@@ -4,6 +4,26 @@ A close-to-metal C/CUDA reference runtime for reinforcement learning
 inference at GB300 NVL72 scale.  No page faults, no `malloc`/`free`,
 no kernel launches, no CPU scheduler wakeups in the per-token hot path.
 
+## Portable, not GB300-only
+
+The code targets GB300 because that's the interesting scale, but it
+runs on **any GPU with compute capability 8.0+** (Ampere or newer).
+The test bench validates the full pipeline on a single GPU with no
+special hardware.
+
+What you'd change for a non-GB300 system:
+
+| GB300 assumption | Portable alternative |
+|---|---|
+| NVLink-C2C coherent command ring | `cudaHostAlloc` + `cudaHostGetDevicePointer` |
+| Grace CPU NUMA topology | Drop the `mbind` calls or set node = 0 |
+| Grace ARM + NVSwitch | Works on any x86 + any NVIDIA GPU |
+| 72 SMs | Auto-detected from `cudaDeviceProp` |
+
+Everything else — atomics, hugepages, `cp.async`, persistent workers,
+on-device sampling — is standard CUDA C that works on any Linux system
+with a modern GPU.
+
 ## Architecture
 
 ```
