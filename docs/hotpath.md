@@ -27,6 +27,13 @@ non-decode work in the hot path.
 | `__atomic_thread_fence`              |     no    |   yes    | Ordering between descriptor write and doorbell |
 | `cp.async` (HBM→SMEM)               |     no    |   yes    | KV block prefetch in worker |
 | Token sampling                       |     no    |   yes    | GPU-resident, no CPU round-trip |
+| Rollout state transition (CAS)       |     no    |   yes    | `rollout_transition` — CAS with ACQ_REL |
+| Pipeline queue push/pop              |     no    |   yes    | `pipeline_push/pop` — atomic head/tail |
+| Reward handoff                       |     no    |   yes    | `reward_push/pop` — atomic head/tail |
+| Metrics increment                    |     no    |   yes    | `METRIC_INC` — relaxed atomic add |
+| Hot-path guard check                 |     no    |   yes    | `HP_GUARD_MALLOC` — counter + optional abort |
+| Rollout slab alloc                   |    yes    |    no    | Bitmap scan on rollout creation |
+| Prefix KV register/release           |    yes    |    no    | refcount management at init/teardown |
 | `malloc` / `free`                    |   allowed |    no    | Zero heap operations in hot path |
 | `syscall` (any)                      |   allowed |    no    | Zero kernel entries in hot path |
 | Scheduler wakeup                     |   allowed |    no    | GPU self-scheduled via persistent workers |

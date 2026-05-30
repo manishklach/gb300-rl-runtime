@@ -17,9 +17,13 @@ TESTDIR := test
 TEST_SRCS  := $(wildcard $(TESTDIR)/*.cu) $(wildcard $(TESTDIR)/*.c)
 TEST_TARGET := $(BLDDIR)/test_bench
 
-.PHONY: all clean test bench
+BENCHDIR := bench
+BENCH_SRC := $(BENCHDIR)/bench_pipeline.cu
+BENCH_TARGET := $(BLDDIR)/bench_pipeline
 
-all: $(BLDDIR)/libruntime.a $(TEST_TARGET)
+.PHONY: all clean test bench bench-pipeline bench-all
+
+all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(BENCH_TARGET)
 
 $(BLDDIR):
 	mkdir -p $(BLDDIR)
@@ -39,11 +43,19 @@ $(BLDDIR)/libruntime.a: $(C_OBJS) $(CU_OBJS)
 $(TEST_TARGET): $(BLDDIR)/test_bench.o $(BLDDIR)/libruntime.a
 	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
 
+$(BENCH_TARGET): $(BENCH_SRC) $(BLDDIR)/libruntime.a
+	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
+
 test: $(TEST_TARGET)
 	./$(TEST_TARGET)
 
 bench: $(TEST_TARGET)
 	./$(TEST_TARGET) --bench --tokens 1000000
+
+bench-pipeline: $(BENCH_TARGET)
+	./$(BENCH_TARGET)
+
+bench-all: bench bench-pipeline
 
 LABS := 01_false_sharing 02_spsc_ring 03_hugepage_tlb 04_syscall_vs_poll 05_doorbell_mock
 

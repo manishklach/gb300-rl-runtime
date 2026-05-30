@@ -64,17 +64,23 @@ make bench                                    # default: 100K tokens
 make bench ARGS="--bench 1000000"             # 1M tokens
 ```
 
-## End-to-End RL Pipeline (Future)
+## Pipeline Benchmark
 
-Once rollout state machine queues are added:
+Measured by `bench/bench_pipeline.cu` (full RL flow simulation):
 
-| Metric | Target |
-|--------|--------|
-| Trajectory init → first token | < 5 µs |
-| KV block acquire              | < 50 ns |
-| Decode step (mock attention)  | < 1 µs |
-| Reward handoff                | < 200 ns |
-| Trajectory teardown           | < 100 ns |
+| Metric | Target | How to measure |
+|--------|:------:|----------------|
+| Rollout throughput       | > 10K rollouts/s | `make bench-pipeline ARGS="-r 10000 -t 128"` |
+| Descriptor posting rate  | > 1M desc/s      | Included in bench output |
+| Reward handoffs          | matched to decode | Included in bench output |
+| Hot-path mallocs         | 0 absolute        | Guard counter in output |
+| Hot-path cudaMallocs     | 0 absolute        | Guard counter in output |
+
+```bash
+make bench-pipeline                           # default: 1000 rollouts, 128 tokens each
+make bench-pipeline ARGS="-r 10000 -t 256"   # 10K rollouts, 256 tokens each
+make bench-all                                # runs both benchmarks
+```
 
 ## How to Contribute a Benchmark
 

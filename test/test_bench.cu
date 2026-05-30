@@ -12,6 +12,12 @@
 #include "completion.h"
 #include "prefetch.h"
 #include "sample.h"
+#include "rollout.h"
+#include "pipeline.h"
+#include "metrics.h"
+#include "hotpath_guard.h"
+#include "reward.h"
+#include "kv_prefix.h"
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -286,6 +292,179 @@ bench_full_pipeline(int n_tokens) {
   cudaEventDestroy(stop);
 }
 
+/* ─── New component tests ──────────────────────────────────────── */
+
+static int
+test_rollout_slab(void) {
+  printf("  test_rollout_slab ... ");
+  rollout_slab_t slab;
+  rollout_slab_init(&slab);
+
+  uint32_t ids[10];
+  for (int i = 0; i < 10; i++) {
+    int ret = rollout_alloc(&slab, &ids[i]);
+    assert(ret == 0);
+    assert(ids[i] < MAX_ROLLOUTS);
+  }
+  for (int i = 0; i < 10; i++)
+    rollout_free(&slab, ids[i]);
+
+  /* verify reuse */
+  uint32_t id2;
+  rollout_alloc(&slab, &id2);
+  assert(id2 < MAX_ROLLOUTS);
+  rollout_free(&slab, id2);
+  printf("OK\n");
+  return 0;
+}
+
+static int
+test_rollout_transitions(void) {
+  printf("  test_rollout_transitions ... ");
+  rollout_t r;
+  memset(&r, 0, sizeof(r));
+  r.state = ROLL_FREE;
+
+  /* invalid */
+  assert(rollout_transition(&r, ROLL_FREE, ROLL_DECODING) != 0);
+  assert(r.state == ROLL_FREE);
+
+  /* valid chain */
+  assert(rollout_transition(&r, ROLL_FREE, ROLL_PREFILL_READY) == 0);
+  assert(rollout_transition(&r, ROLL_PREFILL_READY, ROLL_DECODING) == 0);
+  assert(rollout_transition(&r, ROLL_DECODING, ROLL_REWARD_PENDING) == 0);
+  assert(rollout_transition(&r, ROLL_REWARD_PENDING, ROLL_TRAJECTORY_READY) == 0);
+  assert(rollout_transition(&r, ROLL_TRAJECTORY_READY, ROLL_DONE) == 0);
+  assert(rollout_transition(&r, ROLL_DONE, ROLL_FREE) == 0);
+  assert(r.state == ROLL_FREE);
+  printf("OK\n");
+  return 0;
+}
+
+static int
+test_pipeline_rings(void) {
+  printf("  test_pipeline_rings ... ");
+  RolloutPipeline p;
+  pipeline_init(&p);
+
+  uint32_t rid;
+  assert(rollout_alloc(&p.slab, &rid) == 0);
+
+  /* push through all queues */
+  for (int q = Q_FREE; q <= Q_DONE; q++) {
+    assert(pipeline_push(&p, (pipeline_q_t)q, rid) == 0);
+    uint32_t out;
+    assert(pipeline_pop(&p, (pipeline_q_t)q, &out) == 0);
+    assert(out == rid);
+  }
+
+  /* empty pop */
+  uint32_t dummy;
+  assert(pipeline_pop(&p, Q_FREE, &dummy) != 0);
+
+  rollout_free(&p.slab, rid);
+  printf("OK\n");
+  return 0;
+}
+
+static int
+test_metrics(void) {
+  printf("  test_metrics ... ");
+  RuntimeMetrics m;
+  metrics_init(&m);
+  assert(METRIC_READ(&m, descriptors_posted) == 0);
+  METRIC_INC(&m, descriptors_posted);
+  assert(METRIC_READ(&m, descriptors_posted) == 1);
+  printf("OK\n");
+  return 0;
+}
+
+static int
+test_hotpath_guard(void) {
+  printf("  test_hotpath_guard ... ");
+  HotpathGuard g;
+  hp_guard_init(&g);
+  assert(g.malloc_count == 0);
+  HP_GUARD_MALLOC(&g, 64);
+  assert(g.malloc_count == 1);
+  hp_guard_activate(&g);
+
+  /* capture stderr to test violation message */
+  FILE *old = stderr;
+  stderr = fopen("/dev/null", "w");
+  assert(stderr);
+  HP_GUARD_MALLOC(&g, 64);
+  HP_GUARD_FREE(&g, NULL);
+  fclose(stderr);
+  stderr = old;
+
+  assert(g.malloc_count == 2);
+  assert(g.free_count == 1);
+  printf("OK\n");
+  return 0;
+}
+
+static int
+test_reward_ring(void) {
+  printf("  test_reward_ring ... ");
+  RewardRing rr;
+  reward_ring_init(&rr);
+
+  RewardDesc d;
+  d.rollout_id     = 1;
+  d.token_start    = 0;
+  d.token_count    = 128;
+  d.reward_model_id = 0;
+  d.reward         = 0.0f;
+  d.flags          = 0;
+
+  assert(reward_push(&rr, &d) == 0);
+  RewardDesc got;
+  assert(reward_pop(&rr, &got) == 0);
+  assert(got.rollout_id == 1);
+  assert(got.token_count == 128);
+
+  /* empty pop */
+  assert(reward_pop(&rr, &got) != 0);
+  printf("OK\n");
+  return 0;
+}
+
+static int
+test_kv_prefix(void) {
+  printf("  test_kv_prefix ... ");
+  KVPrefixTable t;
+  kv_prefix_table_init(&t);
+
+  uint32_t pid;
+  int ret = kv_prefix_register(&t, 0x1000, 64, 4, &pid);
+  assert(ret == 0);
+  assert(pid < MAX_PREFIXES);
+
+  KVPrefix *p = kv_prefix_get(&t, pid);
+  assert(p);
+  assert(p->refcnt == 1);
+  assert(p->token_len == 64);
+
+  assert(kv_prefix_acquire(&t, pid) == 0);
+  assert(p->refcnt == 2);
+  assert(kv_prefix_release(&t, pid) == 0);
+  assert(p->refcnt == 1);
+  assert(kv_prefix_release(&t, pid) == 0);
+
+  uint32_t bid;
+  ret = kv_branch_alloc(&t, 0, pid, 0x2000, 16, 1, &bid);
+  assert(ret == 0);
+  assert(bid < MAX_BRANCHES);
+
+  int64_t off = kv_branch_total_offset(&t, bid);
+  assert(off == 0x1000);
+
+  assert(kv_branch_free(&t, bid) == 0);
+  printf("OK\n");
+  return 0;
+}
+
 /* ─── main ─────────────────────────────────────────────────────── */
 
 int
@@ -316,6 +495,13 @@ main(int argc, char **argv) {
   test_ring_full();
   test_arena_basic();
   test_completion_ring();
+  test_rollout_slab();
+  test_rollout_transitions();
+  test_pipeline_rings();
+  test_metrics();
+  test_hotpath_guard();
+  test_reward_ring();
+  test_kv_prefix();
 
   printf("\n── Quick pipeline test (1000 tokens) ──\n\n");
   bench_full_pipeline(1000);

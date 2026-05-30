@@ -75,7 +75,7 @@ with a modern GPU.
 ## Components
 
 | Component | File | Description |
-|---|---|---|
+|---|---|---|---|
 | Work Descriptor | `include/descriptor.h` | 24-byte packed decode-step command |
 | SPSC Ring | `include/ring.h`, `src/ring.c` | Lock-free producer-consumer ring in coherent memory |
 | Completion Ring | `include/completion.h` | GPU→CPU result notification (mirror of command ring) |
@@ -85,6 +85,13 @@ with a modern GPU.
 | Persistent Worker | `cu/worker.cu` | GPU SM decode loop — polls ring, loads KV, runs attention |
 | NUMA Helpers | `include/numa.h`, `src/numa.c` | `mbind`-based NUMA-local hugepage allocation |
 | Host Runtime | `src/main.c` | Init, dispatch loop, completion polling |
+| Rollout State Machine | `include/rollout.h`, `src/rollout.c` | CAS-based rollout lifecycle with valid transition table |
+| Rollout Pipeline | `include/pipeline.h`, `src/pipeline.c` | 6-queue RL pipeline (free/prefill/decode/reward/trajectory/done) |
+| Runtime Metrics | `include/metrics.h`, `src/metrics.c` | Cacheline-padded hot-path counters with formatted output |
+| Hot-Path Guard | `include/hotpath_guard.h`, `src/hotpath_guard.c` | Detects malloc/cudaMalloc/page faults in hot path |
+| Copy-on-Write Prefix KV | `include/kv_prefix.h`, `src/kv_prefix.c`, `cu/kv_prefix.cu` | Shared prefix KV with per-rollout delta branches |
+| Reward Pipeline | `include/reward.h`, `src/reward.c`, `cu/reward.cu` | Mock reward/verifier ring with GPU scoring kernel |
+| Pipeline Benchmark | `bench/bench_pipeline.cu` | Full RL pipeline benchmark with hot-path guard verification |
 
 ## What This Is Not
 
@@ -103,16 +110,18 @@ production inference stacks today.
 | File | What it covers |
 |---|---|
 | `docs/hotpath.md` | Every operation classified as init vs hot path |
-| `docs/metrics.md` | Target metrics and benchmark commands |
+| `docs/metrics.md` | Target metrics and benchmark commands (including new pipeline bench) |
 
 ## Build
 
 Requires CUDA 12.x+ and `libnuma-dev`.
 
 ```bash
-make          # build library + test bench
-make test     # run unit tests
-make bench    # benchmark: 1M tokens through ring+worker
+make               # build library + test bench + pipeline bench
+make test          # run unit tests (including rollout, pipeline, metrics, guard, reward, prefix KV)
+make bench         # benchmark: 1M tokens through ring+worker
+make bench-pipeline # benchmark: full RL pipeline with rollouts, state machine, reward, hot-path guards
+make bench-all     # run both benchmarks
 ```
 
 ## Labs
@@ -143,6 +152,9 @@ make lab-run   # run all labs sequentially
 4. **NUMA-local memory** — `mbind(MPOL_BIND)` on every allocation
 5. **Reward is GPU-resident** — no PCIe round-trips for scoring
 6. **NVLink-C2C for coordination** — coherent rings, no DMA
+7. **Rollouts are hardware-visible state machines** — CAS transitions through 6 pipeline stages, no Python/CPU per-token control
+8. **Hot-path guards verify zero-alloc** — `hotpath_guard` catches accidental `malloc`/`cudaMalloc` in per-token loops
+9. **Copy-on-write prefix KV** — shared prompt KV across rollouts, only per-rollout deltas allocated
 
 ## License
 
