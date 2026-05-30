@@ -26,10 +26,12 @@ BENCH_COW_SRC := $(BENCHDIR)/bench_cow_prefix.cu
 BENCH_COW_TARGET := $(BLDDIR)/bench_cow_prefix
 BENCH_TAX_SRC := $(BENCHDIR)/bench_control_tax.cu
 BENCH_TAX_TARGET := $(BLDDIR)/bench_control_tax
+BENCH_GPU_SCHED_SRC := $(BENCHDIR)/bench_gpu_scheduler.cu
+BENCH_GPU_SCHED_TARGET := $(BLDDIR)/bench_gpu_scheduler
 
-BENCH_TARGETS := $(BENCH_TARGET) $(BENCH_TRACE_TARGET) $(BENCH_COW_TARGET) $(BENCH_TAX_TARGET)
+BENCH_TARGETS := $(BENCH_TARGET) $(BENCH_TRACE_TARGET) $(BENCH_COW_TARGET) $(BENCH_TAX_TARGET) $(BENCH_GPU_SCHED_TARGET)
 
-.PHONY: all clean test bench bench-pipeline bench-trace bench-cow bench-tax bench-all
+.PHONY: all clean test bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-all
 
 all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(BENCH_TARGETS)
 
@@ -63,6 +65,9 @@ $(BENCH_COW_TARGET): $(BENCH_COW_SRC) $(BLDDIR)/libruntime.a
 $(BENCH_TAX_TARGET): $(BENCH_TAX_SRC)
 	$(CC) $(CFLAGS) $< -lpthread -o $@
 
+$(BENCH_GPU_SCHED_TARGET): $(BENCH_GPU_SCHED_SRC) $(BLDDIR)/libruntime.a
+	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
+
 test: $(TEST_TARGET)
 	./$(TEST_TARGET)
 
@@ -81,7 +86,10 @@ bench-cow: $(BENCH_COW_TARGET)
 bench-tax: $(BENCH_TAX_TARGET)
 	./$(BENCH_TAX_TARGET)
 
-bench-all: bench bench-pipeline bench-trace bench-cow bench-tax
+bench-gpu-scheduler: $(BENCH_GPU_SCHED_TARGET)
+	./$(BENCH_GPU_SCHED_TARGET)
+
+bench-all: bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler
 
 LABS := 01_false_sharing 02_spsc_ring 03_hugepage_tlb 04_syscall_vs_poll 05_doorbell_mock
 

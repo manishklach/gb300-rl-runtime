@@ -28,46 +28,46 @@ with a modern GPU.
 ## Architecture
 
 ```
- ┌──────────────────────────────────────────────────────────────┐
- │                     Host (CPU Control Plane)                  │
- │                                                               │
- │  rollout_slab ──► RolloutPipeline ──► metrics/hp_guard/trace  │
- │  (bitmap slab)    (6 ID rings + credits + scheduling)         │
- │       │                    │                                   │
- │       ▼                    ▼                                   │
- │  ┌──────────┐   ┌─────────────────────┐                       │
- │  │ rollout  │   │ free   prefill      │                       │
- │  │ state    │   │ decode reward       │                       │
- │  │ machine  │   │ traj   done         │                       │
- │  │ (CAS)    │   └──────────┬──────────┘                       │
- │  └──────────┘              │                                   │
- │                            ▼                                   │
- │                   ┌────────────────┐                           │
- │                   │  CommandRing   │ ◄── CPU prod, GPU cons    │
- │                   │  (Descriptor)  │                           │
- │                   └───────┬────────┘                           │
- │                           │  coherent / pinned memory          │
- ├───────────────────────────┼───────────────────────────────────┤
- │                      GPU  │                                    │
- │                           ▼                                    │
- │  ┌───────────────────────────────────────────────────────┐     │
- │  │           Persistent decode_worker (1 warp / SM)       │     │
- │  │  poll ring ─► read desc ─► cp.async KV ─► decode      │     │
- │  │                              ─► sample ─► comp_ring    │     │
- │  └───────────────────────────────────────────────────────┘     │
- │                           │                                     │
- │                           ▼                                     │
- │                   ┌──────────────┐                              │
- │                   │ Completion   │ ◄── GPU prod, CPU cons       │
- │                   │ Ring         │                              │
- │                   └──────────────┘                              │
- │                           │                                     │
- │                    ┌───────┴────────┐                            │
- │                    │                │                            │
- │              ┌─────▼─────┐   ┌──────▼──────┐                    │
- │              │ RewardRing│   │ KV Prefix   │                    │
- │              │ (SPSC)    │   │ Table (COW) │                    │
- │              └───────────┘   └─────────────┘                    │
+ ┌────────────────────────────────────────────────────────────────┐
+ │                     Host (CPU)                                 │
+ │  ┌─────────────────────────────────────────────────────────┐   │
+ │  │  v0.2 path (CPU per-token):                              │   │
+ │  │    rollout_slab ──► Pipeline ──► CommandRing ──► GPU     │   │
+ │  │    GPU ──► CompletionRing ──► CPU (one trip per token)   │   │
+ │  └─────────────────────────────────────────────────────────┘   │
+ │                                                                │
+ │  ┌─────────────────────────────────────────────────────────┐   │
+ │  │  v0.3 path (GPU-resident):                               │   │
+ │  │    CPU ──► RequestRing ──► GPU (one request per rollout) │   │
+ │  │    GPU ──► DoneRing ──► CPU (one done per rollout)        │   │
+ │  └─────────────────────────────────────────────────────────┘   │
+ │                    │                                           │
+ │                    ▼                                           │
+ │           ┌────────────────┐                                   │
+ │           │  CommandRing   │ ──► RequestRing (v0.3)            │
+ │           │  CompletionRing│ ◄── DoneRing (v0.3)               │
+ │           └───────┬────────┘                                   │
+ │                   │  coherent / pinned memory                   │
+ ├───────────────────┼───────────────────────────────────────────┤
+ │              GPU  │                                            │
+ │                   ▼                                            │
+ │  ┌──────────────────────────────────────────────────────┐      │
+ │  │  Persistent Workers (1 warp / SM)                    │      │
+ │  │                                                      │      │
+ │  │  decode_worker (v0.2):                               │      │
+ │  │    poll ring ─► read desc ─► decode ─► comp_ring     │      │
+ │  │                                                      │      │
+ │  │  rollout_worker (v0.3):                              │      │
+ │  │    poll request ─► alloc slot ─► decode loop         │      │
+ │  │      ─► sample ─► KV update ─► done_ring             │      │
+ │  └──────────────────────────────────────────────────────┘      │
+ │                   │                                            │
+ │              ┌────┴────┐                                       │
+ │              │         │                                       │
+ │        ┌─────▼──┐  ┌───▼──────┐                               │
+ │        │  KV    │  │  Reward  │                               │
+ │        │ Arena  │  │  Ring    │                               │
+ │        └────────┘  └──────────┘                               │
  └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -124,6 +124,10 @@ with a modern GPU.
 | Pipeline Backpressure | `include/pipeline.h`, `src/pipeline.c` | Credit-based flow control per pipeline stage |
 | COW Prefix KV Benchmark | `bench/bench_cow_prefix.cu` | Memory savings comparison: COW vs full-duplicate KV |
 | Control-Plane Tax Benchmark | `bench/bench_control_tax.cu` | Syscall vs polling vs persistent worker comparison |
+| GPU Request Ring | `include/request.h` | SPSC request ring (CPU→GPU) + done ring (GPU→CPU) for GPU-resident scheduler |
+| GPU Rollout Scheduler | `cu/gpu_scheduler.cu` | Persistent GPU kernel that manages rollout lifecycle without CPU per-token involvement |
+| GPU Scheduler Benchmark | `bench/bench_gpu_scheduler.cu` | Benchmark for GPU-resident rollout scheduler |
+| GPU Scheduler Docs | `docs/gpu_scheduler.md` | Design doc for GPU-resident rollout progression |
 
 ## What This Is Not
 
@@ -145,6 +149,7 @@ production inference stacks today.
 | `docs/hotpath.md` | Every operation classified as init vs hot path |
 | `docs/metrics.md` | Target metrics and benchmark commands (all benchmarks) |
 | `docs/tracing.md` | Trace event types, latency pairs, example output |
+| `docs/gpu_scheduler.md` | GPU-resident rollout scheduler design and comparison |
 
 ## Build
 
@@ -156,10 +161,22 @@ make test          # run unit tests (including rollout, pipeline, metrics, guard
 make bench         # benchmark: 1M tokens through ring+worker
 make bench-pipeline # benchmark: full RL pipeline with rollouts, state machine, reward, hot-path guards
 make bench-trace   # benchmark with nanosecond tracing + latency percentiles
-make bench-cow     # COW prefix KV memory savings benchmark
-make bench-tax     # control-plane tax comparison (syscall vs polling vs persistent worker)
-make bench-all     # run all benchmarks
+make bench-cow          # COW prefix KV memory savings benchmark
+make bench-tax          # control-plane tax comparison (syscall vs polling vs persistent worker)
+make bench-gpu-scheduler # GPU-resident rollout scheduler (zero CPU per-token work)
+make bench-all          # run all 6 benchmarks
 ```
+
+## What Each Benchmark Proves
+
+| Benchmark | Command | What it proves |
+|-----------|---------|----------------|
+| `bench` | `make bench` | Ring + GPU worker baseline throughput (1M tokens through ring, no rollout logic) |
+| `bench-pipeline` | `make bench-pipeline` | End-to-end RL rollout flow: alloc → decode → reward → trajectory → done with hot-path guard verification |
+| `bench-trace` | `make bench-trace` | Nanosecond latency breakdown — where pipeline time is spent (p50/p90/p99 for 8 latency pairs) |
+| `bench-cow` | `make bench-cow` | Memory saved by shared prefix KV vs full-duplicate per rollout |
+| `bench-tax` | `make bench-tax` | Control-plane overhead: eventfd syscall vs userspace polling vs persistent worker (this runtime) |
+| `bench-gpu-scheduler` | `make bench-gpu-scheduler` | GPU-managed rollout lifecycle — zero CPU per-token work, CPU only sees request/done |
 
 ## Benchmark Snapshot
 
@@ -220,6 +237,7 @@ make lab-run   # run all labs sequentially
 9. **Copy-on-write prefix KV** — shared prompt KV across rollouts, only per-rollout deltas allocated
 10. **Credit-based backpressure** — every pipeline stage has a max occupancy; `pipeline_try_push` blocks well before ring-full
 11. **Multiple scheduling policies** — FIFO, shortest-remaining-first, and prefix-sharing policies for the decode queue
+12. **GPU-resident rollout progression** — v0.3 moves the state machine and pipeline to the GPU; CPU only submits requests and drains completions
 
 ## License
 

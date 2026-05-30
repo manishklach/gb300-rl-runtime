@@ -133,6 +133,33 @@ make bench-tax                               # default: 1M iterations
 make bench-tax ARGS="10000000"               # 10M iterations
 ```
 
+## GPU-Resident Scheduler Benchmark
+
+Measured by `bench/bench_gpu_scheduler.cu`:
+
+| Metric | Target | How to measure |
+|--------|:------:|----------------|
+| Rollouts/s (GPU-managed)   | > 20K rollouts/s | `make bench-gpu-scheduler` |
+| Tokens/s (GPU-managed)     | > 2M tokens/s    | Included in output |
+| CPU dispatches per rollout | 1 (request only)  | Architecture property |
+| CPU polls per rollout      | 1 (done only)     | Architecture property |
+
+```bash
+make bench-gpu-scheduler                      # default: 10K rollouts, 128 tokens
+make bench-gpu-scheduler ARGS="-r 50000 -t 256"
+```
+
+## What Each Benchmark Proves
+
+| Benchmark | Proves |
+|-----------|--------|
+| `bench` | Ring + GPU worker baseline throughput |
+| `bench-pipeline` | End-to-end RL rollout flow with hot-path guard |
+| `bench-trace` | Nanosecond latency breakdown (p50/p90/p99) |
+| `bench-cow` | Memory saved by shared prefix KV |
+| `bench-tax` | Control-plane overhead: syscall vs polling vs persistent worker |
+| `bench-gpu-scheduler` | GPU-managed rollout lifecycle — zero CPU per-token work |
+
 ## How to Contribute a Benchmark
 
 1. Add a new `.cu` or `.c` file under `test/` or `lab/`.
