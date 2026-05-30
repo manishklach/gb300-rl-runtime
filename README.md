@@ -75,7 +75,7 @@ with a modern GPU.
 ## Components
 
 | Component | File | Description |
-|---|---|---|---|
+|---|---|---|
 | Work Descriptor | `include/descriptor.h` | 24-byte packed decode-step command |
 | SPSC Ring | `include/ring.h`, `src/ring.c` | Lock-free producer-consumer ring in coherent memory |
 | Completion Ring | `include/completion.h` | GPU→CPU result notification (mirror of command ring) |
