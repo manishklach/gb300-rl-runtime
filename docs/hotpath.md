@@ -34,6 +34,8 @@ non-decode work in the hot path.
 | Hot-path guard check                 |     no    |   yes    | `HP_GUARD_MALLOC` — counter + optional abort |
 | Rollout slab alloc                   |    yes    |    no    | Bitmap scan on rollout creation |
 | Prefix KV register/release           |    yes    |    no    | refcount management at init/teardown |
+| Trace ring push                      |     no    |   yes    | `trace_push` — relaxed store + release head; ~40 ns overhead |
+| Trace latency report                 |    yes    |    no    | Pair matching + sort runs post-benchmark |
 | `malloc` / `free`                    |   allowed |    no    | Zero heap operations in hot path |
 | `syscall` (any)                      |   allowed |    no    | Zero kernel entries in hot path |
 | Scheduler wakeup                     |   allowed |    no    | GPU self-scheduled via persistent workers |

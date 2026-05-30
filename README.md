@@ -92,6 +92,8 @@ with a modern GPU.
 | Copy-on-Write Prefix KV | `include/kv_prefix.h`, `src/kv_prefix.c`, `cu/kv_prefix.cu` | Shared prefix KV with per-rollout delta branches |
 | Reward Pipeline | `include/reward.h`, `src/reward.c`, `cu/reward.cu` | Mock reward/verifier ring with GPU scoring kernel |
 | Pipeline Benchmark | `bench/bench_pipeline.cu` | Full RL pipeline benchmark with hot-path guard verification |
+| Trace Pipeline Benchmark | `bench/bench_trace_pipeline.cu` | Pipeline benchmark with nanosecond tracing and latency percentiles |
+| Tracing | `include/trace.h`, `src/trace.c` | Ring-buffer trace entries with pair-latency report (p50/p90/p99) |
 
 ## What This Is Not
 
@@ -110,18 +112,20 @@ production inference stacks today.
 | File | What it covers |
 |---|---|
 | `docs/hotpath.md` | Every operation classified as init vs hot path |
-| `docs/metrics.md` | Target metrics and benchmark commands (including new pipeline bench) |
+| `docs/metrics.md` | Target metrics and benchmark commands (including pipeline and trace bench) |
+| `docs/tracing.md` | Trace event types, latency pairs, example output |
 
 ## Build
 
 Requires CUDA 12.x+ and `libnuma-dev`.
 
 ```bash
-make               # build library + test bench + pipeline bench
+make               # build library + test bench + all benchmarks
 make test          # run unit tests (including rollout, pipeline, metrics, guard, reward, prefix KV)
 make bench         # benchmark: 1M tokens through ring+worker
 make bench-pipeline # benchmark: full RL pipeline with rollouts, state machine, reward, hot-path guards
-make bench-all     # run both benchmarks
+make bench-trace   # benchmark with nanosecond tracing + latency percentiles
+make bench-all     # run all benchmarks
 ```
 
 ## Labs

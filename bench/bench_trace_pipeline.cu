@@ -1,0 +1,278 @@
+#include "pipeline.h"
+#include "metrics.h"
+#include "hotpath_guard.h"
+#include "reward.h"
+#include "kv_prefix.h"
+#include "trace.h"
+#include "ring.h"
+#include "arena.h"
+#include "completion.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <cuda_runtime.h>
+
+__global__ void decode_worker(CommandRing*, KVArena*, CompletionRing*,
+                              SampleState*, uint64_t*);
+
+typedef struct {
+    RolloutPipeline  pipeline;
+    RuntimeMetrics   metrics;
+    HotpathGuard     hp_guard;
+    KVPrefixTable    kv_prefix_table;
+    TraceRing        trace;
+    CommandRing     *cmd_ring;
+    CompletionRing  *comp_ring;
+    KVArena          kv_arena;
+    RewardRing       reward_ring;
+    uint64_t        *d_step_count;
+    SampleState     *d_sample_st;
+    int              num_sms;
+    int              dev_id;
+} BenchContext;
+
+static uint64_t now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+static int bench_init(BenchContext *ctx, int dev_id, int n_rollouts)
+{
+    (void)n_rollouts;
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->dev_id = dev_id;
+    cudaSetDevice(dev_id);
+
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, dev_id);
+    ctx->num_sms = prop.multiProcessorCount;
+
+    pipeline_init(&ctx->pipeline);
+    metrics_init(&ctx->metrics);
+    hp_guard_init(&ctx->hp_guard);
+    kv_prefix_table_init(&ctx->kv_prefix_table);
+    trace_init(&ctx->trace);
+
+    ctx->cmd_ring  = ring_create();
+    ctx->comp_ring = (CompletionRing *)ring_create();
+    if (!ctx->cmd_ring || !ctx->comp_ring) {
+        fprintf(stderr, "failed to create rings\n");
+        return -1;
+    }
+
+    arena_init(&ctx->kv_arena, 256UL << 20, 16384);
+    reward_ring_init(&ctx->reward_ring);
+
+    cudaMalloc(&ctx->d_step_count, sizeof(uint64_t));
+    cudaMemset(ctx->d_step_count, 0, sizeof(uint64_t));
+
+    cudaMalloc(&ctx->d_sample_st, sizeof(SampleState));
+    SampleState h_st;
+    memset(&h_st, 0, sizeof(h_st));
+    h_st.rng_state[0] = 42;
+    h_st.rng_state[1] = 42 ^ 0x9e3779b97f4a7c15ULL;
+    h_st.rng_state[2] = (42 << 17) ^ 0x3c6ef372fe94f82aULL;
+    h_st.rng_state[3] = ~42ULL;
+    h_st.temperature   = 1.0f;
+    h_st.top_k         = 50;
+    h_st.top_p         = 0.9f;
+    h_st.vocab_size    = MAX_VOCAB_SIZE;
+    cudaMemcpy(ctx->d_sample_st, &h_st, sizeof(SampleState), cudaMemcpyHostToDevice);
+
+    int smem_size = 3 * 16384;
+    decode_worker<<<ctx->num_sms, 32, smem_size>>>(
+        ctx->cmd_ring, &ctx->kv_arena, ctx->comp_ring,
+        ctx->d_sample_st, ctx->d_step_count);
+
+    return 0;
+}
+
+static void bench_shutdown(BenchContext *ctx)
+{
+    Descriptor sentinel;
+    memset(&sentinel, 0, sizeof(sentinel));
+    sentinel.seq_id = UINT64_MAX;
+    for (int i = 0; i < ctx->num_sms; i++) {
+        uint32_t pos = ring_acquire(ctx->cmd_ring, 1);
+        if (pos != UINT32_MAX) {
+            ctx->cmd_ring->slots[pos] = sentinel;
+            ring_commit(ctx->cmd_ring, 1);
+        }
+    }
+
+    cudaFree(ctx->d_step_count);
+    cudaFree(ctx->d_sample_st);
+    ring_destroy(ctx->cmd_ring);
+    ring_destroy((CommandRing *)ctx->comp_ring);
+    arena_destroy(&ctx->kv_arena);
+}
+
+static int dispatch_decode_step(BenchContext *ctx, uint32_t rollout_id,
+                                uint32_t step, uint32_t kv_block,
+                                uint32_t total_tokens)
+{
+    uint32_t pos = ring_acquire(ctx->cmd_ring, 1);
+    if (pos == UINT32_MAX) {
+        METRIC_INC(ctx->metrics, ring_full_spins);
+        Completion c;
+        while (comp_ring_poll(ctx->comp_ring, &c)) {
+            METRIC_INC(ctx->metrics, descriptors_consumed);
+            trace_push(&ctx->trace, TRACE_COMPLETION_POLLED,
+                       (uint32_t)(c.seq_id & 0xFFFFFFFF), c.token_id);
+        }
+        pos = ring_acquire(ctx->cmd_ring, 1);
+        if (pos == UINT32_MAX)
+            return -1;
+    }
+
+    Descriptor desc;
+    desc.seq_id            = rollout_id;
+    desc.kv_block_offset   = kv_block;
+    desc.num_kv_blocks     = 1;
+    desc.attention_flags   = 0;
+    desc.pad               = 0;
+    desc.output_token_offset = step;
+    desc.reward_cookie     = (uint64_t)rollout_id << 32 | step;
+
+    trace_push(&ctx->trace, TRACE_DESC_POSTED, rollout_id, step);
+    ctx->cmd_ring->slots[pos] = desc;
+    ring_commit(ctx->cmd_ring, 1);
+    trace_push(&ctx->trace, TRACE_DESC_COMMITTED, rollout_id, step);
+    METRIC_INC(ctx->metrics, descriptors_posted);
+    return 0;
+}
+
+static int drain_completions(BenchContext *ctx)
+{
+    int n = 0;
+    Completion c;
+    while (comp_ring_poll(ctx->comp_ring, &c)) {
+        METRIC_INC(ctx->metrics, descriptors_consumed);
+        trace_push(&ctx->trace, TRACE_DESC_CONSUMED,
+                   (uint32_t)(c.seq_id & 0xFFFFFFFF), c.token_id);
+        trace_push(&ctx->trace, TRACE_COMPLETION_POLLED,
+                   (uint32_t)(c.seq_id & 0xFFFFFFFF), c.token_id);
+        n++;
+    }
+    return n;
+}
+
+int main(int argc, char **argv)
+{
+    int n_rollouts = 1000;
+    int tokens_per_rollout = 128;
+    int dev_id = 0;
+
+    int opt;
+    while ((opt = getopt(argc, argv, "r:t:d:")) != -1) {
+        switch (opt) {
+        case 'r': n_rollouts        = atoi(optarg); break;
+        case 't': tokens_per_rollout = atoi(optarg); break;
+        case 'd': dev_id            = atoi(optarg); break;
+        }
+    }
+
+    int n_tokens = n_rollouts * tokens_per_rollout;
+
+    printf("GB300 RL Runtime — Traced Pipeline Benchmark\n");
+    printf("  Rollouts:         %d\n", n_rollouts);
+    printf("  Tokens/rollout:   %d\n", tokens_per_rollout);
+    printf("  Total tokens:     %d\n", n_tokens);
+    printf("  Device:           %d\n\n", dev_id);
+
+    BenchContext ctx;
+    if (bench_init(&ctx, dev_id, n_rollouts) != 0)
+        return 1;
+
+    hp_guard_activate(&ctx.hp_guard);
+
+    uint64_t t0 = now_ns();
+
+    uint32_t total_completed = 0;
+
+    for (int r = 0; r < n_rollouts; r++) {
+        uint32_t rid;
+        if (rollout_alloc(&ctx.pipeline.slab, &rid) != 0) {
+            fprintf(stderr, "rollout_alloc failed at %d\n", r);
+            break;
+        }
+        trace_push(&ctx.trace, TRACE_ROLLOUT_ALLOC, rid, 0);
+
+        rollout_t *ro = rollout_get(&ctx.pipeline.slab, rid);
+        ro->max_tokens = tokens_per_rollout;
+        ro->rng_seed   = 42 + r;
+
+        rollout_transition(ro, ROLL_FREE, ROLL_PREFILL_READY);
+        pipeline_push(&ctx.pipeline, Q_PREFILL, rid);
+
+        rollout_transition(ro, ROLL_PREFILL_READY, ROLL_DECODING);
+        pipeline_push(&ctx.pipeline, Q_DECODE, rid);
+
+        int kv_block = r % 128;
+        for (int t = 0; t < tokens_per_rollout; t++) {
+            if (dispatch_decode_step(&ctx, rid, t, kv_block, tokens_per_rollout) != 0) {
+                METRIC_INC(&ctx.metrics, pipeline_overflow);
+                break;
+            }
+            kv_block = (kv_block + 1) % 128;
+        }
+
+        rollout_transition(ro, ROLL_DECODING, ROLL_REWARD_PENDING);
+        pipeline_push(&ctx.pipeline, Q_REWARD, rid);
+
+        RewardDesc rd;
+        rd.rollout_id     = rid;
+        rd.token_start    = 0;
+        rd.token_count    = tokens_per_rollout;
+        rd.reward_model_id = 0;
+        rd.reward         = reward_score_mock(NULL, tokens_per_rollout);
+        rd.flags          = 0;
+        reward_push(&ctx.reward_ring, &rd);
+        trace_push(&ctx.trace, TRACE_REWARD_POSTED, rid, tokens_per_rollout);
+        trace_push(&ctx.trace, TRACE_REWARD_SCORED, rid, tokens_per_rollout);
+
+        rollout_transition(ro, ROLL_REWARD_PENDING, ROLL_TRAJECTORY_READY);
+        pipeline_push(&ctx.pipeline, Q_TRAJECTORY, rid);
+
+        rollout_transition(ro, ROLL_TRAJECTORY_READY, ROLL_DONE);
+        pipeline_push(&ctx.pipeline, Q_DONE, rid);
+
+        total_completed += tokens_per_rollout;
+        METRIC_INC(&ctx.metrics, rollouts_completed);
+        trace_push(&ctx.trace, TRACE_TRAJECTORY_DONE, rid, tokens_per_rollout);
+        rollout_free(&ctx.pipeline.slab, rid);
+        trace_push(&ctx.trace, TRACE_ROLLOUT_FREE, rid, 0);
+    }
+
+    int comps = drain_completions(&ctx);
+
+    hp_guard_deactivate(&ctx.hp_guard);
+
+    uint64_t t1 = now_ns();
+    uint64_t wall_ns = t1 - t0;
+
+    metrics_fprintf(stdout, &ctx.metrics, wall_ns, n_tokens, n_rollouts);
+
+    printf("\n  Completions drained:  %d\n", comps);
+    printf("  Hot path mallocs:     %lu\n",
+           (unsigned long)ctx.hp_guard.malloc_count);
+    printf("  Hot path cudaMallocs: %lu\n",
+           (unsigned long)ctx.hp_guard.cuda_malloc_count);
+    printf("  Page faults tracked:  %lu\n",
+           (unsigned long)ctx.hp_guard.page_fault_count);
+
+    if (ctx.hp_guard.malloc_count == 0 && ctx.hp_guard.cuda_malloc_count == 0)
+        printf("  Hot path guards:      CLEAN (no violations)\n");
+    else
+        printf("  Hot path guards:      VIOLATIONS DETECTED\n");
+
+    trace_report_from(&ctx.trace, wall_ns, n_tokens, n_rollouts, "");
+
+    printf("\nDone.\n");
+
+    bench_shutdown(&ctx);
+    return 0;
+}

@@ -20,10 +20,12 @@ TEST_TARGET := $(BLDDIR)/test_bench
 BENCHDIR := bench
 BENCH_SRC := $(BENCHDIR)/bench_pipeline.cu
 BENCH_TARGET := $(BLDDIR)/bench_pipeline
+BENCH_TRACE_SRC := $(BENCHDIR)/bench_trace_pipeline.cu
+BENCH_TRACE_TARGET := $(BLDDIR)/bench_trace_pipeline
 
-.PHONY: all clean test bench bench-pipeline bench-all
+.PHONY: all clean test bench bench-pipeline bench-trace bench-all
 
-all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(BENCH_TARGET)
+all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(BENCH_TARGET) $(BENCH_TRACE_TARGET)
 
 $(BLDDIR):
 	mkdir -p $(BLDDIR)
@@ -46,6 +48,9 @@ $(TEST_TARGET): $(BLDDIR)/test_bench.o $(BLDDIR)/libruntime.a
 $(BENCH_TARGET): $(BENCH_SRC) $(BLDDIR)/libruntime.a
 	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
 
+$(BENCH_TRACE_TARGET): $(BENCH_TRACE_SRC) $(BLDDIR)/libruntime.a
+	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
+
 test: $(TEST_TARGET)
 	./$(TEST_TARGET)
 
@@ -55,7 +60,10 @@ bench: $(TEST_TARGET)
 bench-pipeline: $(BENCH_TARGET)
 	./$(BENCH_TARGET)
 
-bench-all: bench bench-pipeline
+bench-trace: $(BENCH_TRACE_TARGET)
+	./$(BENCH_TRACE_TARGET)
+
+bench-all: bench bench-pipeline bench-trace
 
 LABS := 01_false_sharing 02_spsc_ring 03_hugepage_tlb 04_syscall_vs_poll 05_doorbell_mock
 

@@ -75,11 +75,31 @@ Measured by `bench/bench_pipeline.cu` (full RL flow simulation):
 | Reward handoffs          | matched to decode | Included in bench output |
 | Hot-path mallocs         | 0 absolute        | Guard counter in output |
 | Hot-path cudaMallocs     | 0 absolute        | Guard counter in output |
+| Descriptor post → commit | < 100 ns p50     | `make bench-trace` latency report |
+| Desc post → GPU dequeue  | < 5 µs p50       | `make bench-trace` latency report |
 
 ```bash
 make bench-pipeline                           # default: 1000 rollouts, 128 tokens each
 make bench-pipeline ARGS="-r 10000 -t 256"   # 10K rollouts, 256 tokens each
 make bench-all                                # runs both benchmarks
+```
+
+## Trace Pipeline Benchmark
+
+Measured by `bench/bench_trace_pipeline.cu` with ring-buffer tracing:
+
+| Metric | Source |
+|--------|--------|
+| Descriptor post → commit latency | Trace pair (p50/p90/p99) |
+| Desc post → GPU dequeue latency | Trace pair (p50/p90/p99) |
+| Desc post → completion latency | Trace pair (p50/p90/p99) |
+| GPU dequeue → completion latency | Trace pair (p50/p90/p99) |
+| Rollout lifetime | Trace pair (p50/p90/p99) |
+| Reward → trajectory handoff | Trace pair (p50/p90/p99) |
+
+```bash
+make bench-trace                              # default: 1000 rollouts, 128 tokens each
+make bench-trace ARGS="-r 10000 -t 256"      # 10K rollouts with tracing
 ```
 
 ## How to Contribute a Benchmark
