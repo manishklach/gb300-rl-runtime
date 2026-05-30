@@ -1,7 +1,11 @@
 CC      := gcc
 NVCC    := nvcc
 CFLAGS  := -O3 -Wall -Wextra -march=native -Iinclude
-NVFLAGS := -O3 -arch=sm_90a -Iinclude --extended-lambda
+NVFLAGS := -O3 -Iinclude --extended-lambda \
+           -gencode arch=compute_80,code=sm_80 \
+           -gencode arch=compute_86,code=sm_86 \
+           -gencode arch=compute_89,code=sm_89 \
+           -gencode arch=compute_90,code=sm_90a
 LDFLAGS := -lpthread -lnuma -lcudart
 
 SRCDIR  := src

@@ -15,26 +15,22 @@ numa_alloc_hugepages(int node, size_t size) {
     return NULL;
   }
 
-  struct bitmask *mask = numa_allocate_cpumask();
-  if (!mask)
-    goto fail;
-  numa_bitmask_setbit(mask, node);
-
-  if (mbind(p, size, MPOL_BIND, mask->maskp, mask->size,
-            MPOL_MF_MOVE | MPOL_MF_STRICT) != 0) {
-    perror("numa_alloc_hugepages: mbind");
-    numa_free_cpumask(mask);
-    goto fail;
+  /* NUMA affinity is a performance hint on GB300; skip if unavailable */
+  if (numa_available() >= 0) {
+    struct bitmask *mask = numa_allocate_cpumask();
+    if (mask) {
+      numa_bitmask_setbit(mask, node);
+      if (mbind(p, size, MPOL_BIND, mask->maskp, mask->size,
+                MPOL_MF_MOVE | MPOL_MF_STRICT) != 0) {
+        perror("numa_alloc_hugepages: mbind (non-fatal)");
+      }
+      numa_free_cpumask(mask);
+    }
   }
-  numa_free_cpumask(mask);
 
   /* fault every page on the target node */
   memset(p, 0, size);
   return p;
-
-fail:
-  munmap(p, size);
-  return NULL;
 }
 
 void

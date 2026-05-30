@@ -15,11 +15,11 @@ special hardware.
 What you'd change for a non-GB300 system:
 
 | GB300 assumption | Portable alternative |
-|---|---|
+|---|---|---|
 | NVLink-C2C coherent command ring | `cudaHostAlloc` + `cudaHostGetDevicePointer` |
-| Grace CPU NUMA topology | Drop the `mbind` calls or set node = 0 |
+| Grace CPU NUMA topology | `numa.c` now guards with `numa_available()` — skips `mbind` on non-NUMA systems |
 | Grace ARM + NVSwitch | Works on any x86 + any NVIDIA GPU |
-| 72 SMs | Auto-detected from `cudaDeviceProp` |
+| `-arch=sm_90a` (Blackwell) | Makefile now uses multi-arch gencode: sm_80 (Ampere) through sm_90a (Blackwell) |
 
 Everything else — atomics, hugepages, `cp.async`, persistent workers,
 on-device sampling — is standard CUDA C that works on any Linux system
@@ -129,6 +129,28 @@ with a modern GPU.
 | GPU Scheduler Benchmark | `bench/bench_gpu_scheduler.cu` | Benchmark for GPU-resident rollout scheduler |
 | GPU Scheduler Docs | `docs/gpu_scheduler.md` | Design doc for GPU-resident rollout progression |
 
+## Implementation Status: Real vs Stub
+
+| Component | Status | What it actually does |
+|-----------|--------|----------------------|
+| Command/Completion rings | **Real** | Lock-free SPSC with acquire/release atomics, cacheline-padded indices |
+| KV arena (hugepage) | **Real** | `mmap MAP_HUGETLB`, bitmap O(1) alloc, pre-faulted |
+| `cp.async` prefetch pipeline | **Real** | Triple-buffered async copy device code |
+| GPU sampling (xoshiro256**) | **Real** | Device-side PRNG, top-k/p, temperature scaling |
+| Persistent decode worker | **Real** | Per-SM warp, ring poll loop, `__nanosleep` yield |
+| NUMA binding | **Real** | `mbind(MPOL_BIND)` with `numa_available()` guard |
+| Rollout state machine | **Real** | CAS transitions, slab allocator, transition validation |
+| Pipeline rings | **Real** | 6 lock-free ID rings with acquire/release |
+| Hot-path guards | **Real** | Counts malloc/calloc/etc, flags violations at runtime |
+| Tracing | **Real** | 1M-entry ring buffer, pair-latency matching, p50/p90/p99 |
+| Request/Done rings (v0.3) | **Real** | Host+device atomics, GPU resident slot management |
+| Attention decoder | **Stub** | `process_descriptor` writes a mock completion — no real attention math |
+| Reward model | **Stub** | `reward_score_mock()` returns `(n & 0xFF) / 255.0f` — no real scoring |
+
+Benchmarks measure **ring throughput, control-plane latency, and pipeline overhead**,
+not FLOPs or model quality. The attention stub means token/s numbers reflect the
+control-path speed, not actual decode performance.
+
 ## What This Is Not
 
 This is not a replacement for vLLM, TensorRT-LLM, SGLang, or JAX.
@@ -187,6 +209,10 @@ Hardware:
   OS:       Linux
   CUDA:     12.x
   Build:    make bench-all
+
+Note: token throughput reflects the stub attention (mock completion write).
+Real attention kernels would add compute latency; the numbers here measure
+the control path only.
 
 Results (run `make bench-all` on your hardware):
   Ring throughput:                > 50 M ops/s
