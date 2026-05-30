@@ -68,6 +68,26 @@ make test     # run unit tests
 make bench    # benchmark: 1M tokens through ring+worker
 ```
 
+## Labs
+
+The `lab/` directory contains five self-contained C experiments
+that teach the close-to-metal concepts used in the runtime:
+
+| Lab | What it teaches | Runs on |
+|---|---|---|
+| `01_false_sharing` | Cache line contention — MESI protocol, padding | any Linux |
+| `02_spsc_ring` | Lock-free ring buffer from scratch — atomics, memory ordering | any Linux |
+| `03_hugepage_tlb` | 4K vs 2M page TLB miss comparison — why hugepages matter | Linux w/ hugepages |
+| `04_syscall_vs_poll` | eventfd wakeup vs shared-memory polling — syscall cost | any Linux |
+| `05_doorbell_mock` | Producer/consumer with doorbell — device queue model | any Linux |
+
+Each lab is standalone — `cd lab/01_false_sharing && make run`.
+
+```bash
+make labs      # build all labs
+make lab-run   # run all labs sequentially
+```
+
 ## Design Rules
 
 1. **Pre-fault everything** — no runtime page faults

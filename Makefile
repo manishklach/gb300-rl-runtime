@@ -45,5 +45,28 @@ test: $(TEST_TARGET)
 bench: $(TEST_TARGET)
 	./$(TEST_TARGET) --bench --tokens 1000000
 
+LABS := 01_false_sharing 02_spsc_ring 03_hugepage_tlb 04_syscall_vs_poll 05_doorbell_mock
+
+.PHONY: labs lab-clean
+
+labs:
+	@for lab in $(LABS); do \
+		echo "=== Building lab/$$lab ==="; \
+		$(MAKE) -C lab/$$lab; \
+	done
+
+lab-run:
+	@for lab in $(LABS); do \
+		echo "=== Running lab/$$lab ==="; \
+		$(MAKE) -C lab/$$lab run; \
+		echo; \
+	done
+
+lab-clean:
+	@for lab in $(LABS); do \
+		$(MAKE) -C lab/$$lab clean; \
+	done
+
 clean:
 	rm -rf $(BLDDIR)
+	$(MAKE) lab-clean
