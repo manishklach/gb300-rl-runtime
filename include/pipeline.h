@@ -28,8 +28,27 @@ typedef enum {
 } pipeline_q_t;
 
 typedef struct {
-    IdRing    queues[Q_COUNT];
-    rollout_slab_t slab;
+    uint32_t max_decode_credits;
+    uint32_t max_reward_credits;
+    uint32_t max_trajectory_credits;
+    uint32_t kv_block_limit;
+    uint32_t decode_used;
+    uint32_t reward_used;
+    uint32_t trajectory_used;
+    uint32_t kv_blocks_used;
+} PipelineCredits;
+
+typedef enum {
+    SCHED_FIFO,
+    SCHED_SHORTEST_REMAINING,
+    SCHED_PREFIX_SHARING,
+} SchedulePolicy;
+
+typedef struct {
+    IdRing          queues[Q_COUNT];
+    rollout_slab_t  slab;
+    PipelineCredits credits;
+    SchedulePolicy  policy;
 } RolloutPipeline;
 
 int  pipeline_init(RolloutPipeline *p);
@@ -37,6 +56,18 @@ int  pipeline_push(RolloutPipeline *p, pipeline_q_t q, uint32_t rollout_id);
 int  pipeline_pop(RolloutPipeline *p, pipeline_q_t q, uint32_t *out_id);
 int  pipeline_transition(RolloutPipeline *p, uint32_t rollout_id,
                          rollout_state_t from, rollout_state_t to);
+
+void pipeline_credits_set(RolloutPipeline *p, uint32_t max_decode,
+                          uint32_t max_reward, uint32_t max_trajectory,
+                          uint32_t kv_limit);
+int  pipeline_try_push(RolloutPipeline *p, pipeline_q_t q,
+                       uint32_t rollout_id);
+void pipeline_release(RolloutPipeline *p, pipeline_q_t q, uint32_t n);
+
+void pipeline_set_schedule_policy(RolloutPipeline *p, SchedulePolicy policy);
+int  pipeline_schedule(RolloutPipeline *p, pipeline_q_t q, uint32_t *out_id);
+
+uint32_t pipeline_occupancy(const RolloutPipeline *p, pipeline_q_t q);
 
 static inline const char *pipeline_q_name(pipeline_q_t q)
 {
@@ -61,5 +92,15 @@ static inline const char *rollout_state_name(rollout_state_t s)
     case ROLL_TRAJECTORY_READY: return "TRAJECTORY_READY";
     case ROLL_DONE:             return "DONE";
     default:                    return "?";
+    }
+}
+
+static inline const char *schedule_policy_name(SchedulePolicy p)
+{
+    switch (p) {
+    case SCHED_FIFO:              return "FIFO";
+    case SCHED_SHORTEST_REMAINING: return "SHORTEST_REMAINING";
+    case SCHED_PREFIX_SHARING:     return "PREFIX_SHARING";
+    default:                      return "?";
     }
 }

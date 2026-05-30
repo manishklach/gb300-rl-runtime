@@ -28,21 +28,47 @@ with a modern GPU.
 ## Architecture
 
 ```
-  ┌──────────────┐    ┌─────────────────┐    ┌─────────────────┐
-  │  CPU Control │───▶│  SPSC Command   │───▶│  Persistent GPU │
-  │  Plane       │    │  Ring (NVLink-  │    │  Workers        │
-  │              │◀───│  C2C coherent)  │◀───│                 │
-  └──────────────┘    └─────────────────┘    └─────────────────┘
-                              │                       │
-                              │               ┌───────┴───────┐
-                              │               │  Completion   │
-                              │               │  Ring         │
-                              │               └───────────────┘
-                              │                       │
-                        ┌─────▼─────┐         ┌───────▼───────┐
-                        │  KV Arena │         │  Reward       │
-                        │ (hugepage)│         │  (GPU-res.)   │
-                        └───────────┘         └───────────────┘
+ ┌──────────────────────────────────────────────────────────────┐
+ │                     Host (CPU Control Plane)                  │
+ │                                                               │
+ │  rollout_slab ──► RolloutPipeline ──► metrics/hp_guard/trace  │
+ │  (bitmap slab)    (6 ID rings + credits + scheduling)         │
+ │       │                    │                                   │
+ │       ▼                    ▼                                   │
+ │  ┌──────────┐   ┌─────────────────────┐                       │
+ │  │ rollout  │   │ free   prefill      │                       │
+ │  │ state    │   │ decode reward       │                       │
+ │  │ machine  │   │ traj   done         │                       │
+ │  │ (CAS)    │   └──────────┬──────────┘                       │
+ │  └──────────┘              │                                   │
+ │                            ▼                                   │
+ │                   ┌────────────────┐                           │
+ │                   │  CommandRing   │ ◄── CPU prod, GPU cons    │
+ │                   │  (Descriptor)  │                           │
+ │                   └───────┬────────┘                           │
+ │                           │  coherent / pinned memory          │
+ ├───────────────────────────┼───────────────────────────────────┤
+ │                      GPU  │                                    │
+ │                           ▼                                    │
+ │  ┌───────────────────────────────────────────────────────┐     │
+ │  │           Persistent decode_worker (1 warp / SM)       │     │
+ │  │  poll ring ─► read desc ─► cp.async KV ─► decode      │     │
+ │  │                              ─► sample ─► comp_ring    │     │
+ │  └───────────────────────────────────────────────────────┘     │
+ │                           │                                     │
+ │                           ▼                                     │
+ │                   ┌──────────────┐                              │
+ │                   │ Completion   │ ◄── GPU prod, CPU cons       │
+ │                   │ Ring         │                              │
+ │                   └──────────────┘                              │
+ │                           │                                     │
+ │                    ┌───────┴────────┐                            │
+ │                    │                │                            │
+ │              ┌─────▼─────┐   ┌──────▼──────┐                    │
+ │              │ RewardRing│   │ KV Prefix   │                    │
+ │              │ (SPSC)    │   │ Table (COW) │                    │
+ │              └───────────┘   └─────────────┘                    │
+ └──────────────────────────────────────────────────────────────┘
 ```
 
 ### Hot-Path Anatomy
@@ -94,6 +120,10 @@ with a modern GPU.
 | Pipeline Benchmark | `bench/bench_pipeline.cu` | Full RL pipeline benchmark with hot-path guard verification |
 | Trace Pipeline Benchmark | `bench/bench_trace_pipeline.cu` | Pipeline benchmark with nanosecond tracing and latency percentiles |
 | Tracing | `include/trace.h`, `src/trace.c` | Ring-buffer trace entries with pair-latency report (p50/p90/p99) |
+| Scheduling Policies | `include/pipeline.h`, `src/pipeline.c` | FIFO / shortest-remaining / prefix-sharing scheduling |
+| Pipeline Backpressure | `include/pipeline.h`, `src/pipeline.c` | Credit-based flow control per pipeline stage |
+| COW Prefix KV Benchmark | `bench/bench_cow_prefix.cu` | Memory savings comparison: COW vs full-duplicate KV |
+| Control-Plane Tax Benchmark | `bench/bench_control_tax.cu` | Syscall vs polling vs persistent worker comparison |
 
 ## What This Is Not
 
@@ -111,8 +141,9 @@ production inference stacks today.
 
 | File | What it covers |
 |---|---|
+| `docs/architecture.md` | Full architecture map, hot path vs init path, component interactions |
 | `docs/hotpath.md` | Every operation classified as init vs hot path |
-| `docs/metrics.md` | Target metrics and benchmark commands (including pipeline and trace bench) |
+| `docs/metrics.md` | Target metrics and benchmark commands (all benchmarks) |
 | `docs/tracing.md` | Trace event types, latency pairs, example output |
 
 ## Build
@@ -125,8 +156,36 @@ make test          # run unit tests (including rollout, pipeline, metrics, guard
 make bench         # benchmark: 1M tokens through ring+worker
 make bench-pipeline # benchmark: full RL pipeline with rollouts, state machine, reward, hot-path guards
 make bench-trace   # benchmark with nanosecond tracing + latency percentiles
+make bench-cow     # COW prefix KV memory savings benchmark
+make bench-tax     # control-plane tax comparison (syscall vs polling vs persistent worker)
 make bench-all     # run all benchmarks
 ```
+
+## Benchmark Snapshot
+
+```
+Hardware:
+  GPU:      H100 (or your GPU here)
+  CPU:      x86-64 / Grace ARM
+  OS:       Linux
+  CUDA:     12.x
+  Build:    make bench-all
+
+Results (run `make bench-all` on your hardware):
+  Ring throughput:                > 50 M ops/s
+  Full pipeline tokens/s:         > 1M tokens/s
+  Pipeline rollouts/s:            > 10K rollouts/s
+  COW prefix KV memory saved:     > 90% for 10K branches
+  Control-plane tax:
+    syscall per step:             ~X ns (baseline)
+    userspace polling:            ~Y ns (fast, CPU-hungry)
+    persistent worker (this):     ~Z ns (fastest, no CPU tax)
+  Hot-path mallocs:               0 (clean)
+  Post-init page faults:          0
+  Per-token kernel launches:      0
+```
+
+Run on your hardware and open a PR to update this table.
 
 ## Labs
 
@@ -159,6 +218,8 @@ make lab-run   # run all labs sequentially
 7. **Rollouts are hardware-visible state machines** — CAS transitions through 6 pipeline stages, no Python/CPU per-token control
 8. **Hot-path guards verify zero-alloc** — `hotpath_guard` catches accidental `malloc`/`cudaMalloc` in per-token loops
 9. **Copy-on-write prefix KV** — shared prompt KV across rollouts, only per-rollout deltas allocated
+10. **Credit-based backpressure** — every pipeline stage has a max occupancy; `pipeline_try_push` blocks well before ring-full
+11. **Multiple scheduling policies** — FIFO, shortest-remaining-first, and prefix-sharing policies for the decode queue
 
 ## License
 

@@ -102,6 +102,37 @@ make bench-trace                              # default: 1000 rollouts, 128 toke
 make bench-trace ARGS="-r 10000 -t 256"      # 10K rollouts with tracing
 ```
 
+## COW Prefix KV Benchmark
+
+Measured by `bench/bench_cow_prefix.cu`:
+
+| Metric | 10K branches target | How to measure |
+|--------|:-------------------:|----------------|
+| Memory saved vs full duplicate | > 90% | `make bench-cow` |
+| Prefix refcount after branches | == n_branches | Included in output |
+| Branch alloc time | < 100 ns/op | Included in output |
+| Branch resolve time | < 50 ns/op | Included in output |
+
+```bash
+make bench-cow                               # default: 10K branches
+make bench-cow ARGS="100000"                 # 100K branches
+```
+
+## Control-Plane Tax Benchmark
+
+Measured by `bench/bench_control_tax.cu`:
+
+| Mode | Mechanism | Expected latency |
+|------|-----------|:----------------:|
+| A | eventfd write+read per step | ~1-5 µs |
+| B | Userspace polling (atomic spin) | ~20-50 ns |
+| C | Persistent worker + ring (this runtime) | ~10-30 ns |
+
+```bash
+make bench-tax                               # default: 1M iterations
+make bench-tax ARGS="10000000"               # 10M iterations
+```
+
 ## How to Contribute a Benchmark
 
 1. Add a new `.cu` or `.c` file under `test/` or `lab/`.

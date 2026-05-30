@@ -22,10 +22,16 @@ BENCH_SRC := $(BENCHDIR)/bench_pipeline.cu
 BENCH_TARGET := $(BLDDIR)/bench_pipeline
 BENCH_TRACE_SRC := $(BENCHDIR)/bench_trace_pipeline.cu
 BENCH_TRACE_TARGET := $(BLDDIR)/bench_trace_pipeline
+BENCH_COW_SRC := $(BENCHDIR)/bench_cow_prefix.cu
+BENCH_COW_TARGET := $(BLDDIR)/bench_cow_prefix
+BENCH_TAX_SRC := $(BENCHDIR)/bench_control_tax.cu
+BENCH_TAX_TARGET := $(BLDDIR)/bench_control_tax
 
-.PHONY: all clean test bench bench-pipeline bench-trace bench-all
+BENCH_TARGETS := $(BENCH_TARGET) $(BENCH_TRACE_TARGET) $(BENCH_COW_TARGET) $(BENCH_TAX_TARGET)
 
-all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(BENCH_TARGET) $(BENCH_TRACE_TARGET)
+.PHONY: all clean test bench bench-pipeline bench-trace bench-cow bench-tax bench-all
+
+all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(BENCH_TARGETS)
 
 $(BLDDIR):
 	mkdir -p $(BLDDIR)
@@ -51,6 +57,12 @@ $(BENCH_TARGET): $(BENCH_SRC) $(BLDDIR)/libruntime.a
 $(BENCH_TRACE_TARGET): $(BENCH_TRACE_SRC) $(BLDDIR)/libruntime.a
 	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
 
+$(BENCH_COW_TARGET): $(BENCH_COW_SRC) $(BLDDIR)/libruntime.a
+	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
+
+$(BENCH_TAX_TARGET): $(BENCH_TAX_SRC)
+	$(CC) $(CFLAGS) $< -lpthread -o $@
+
 test: $(TEST_TARGET)
 	./$(TEST_TARGET)
 
@@ -63,7 +75,13 @@ bench-pipeline: $(BENCH_TARGET)
 bench-trace: $(BENCH_TRACE_TARGET)
 	./$(BENCH_TRACE_TARGET)
 
-bench-all: bench bench-pipeline bench-trace
+bench-cow: $(BENCH_COW_TARGET)
+	./$(BENCH_COW_TARGET)
+
+bench-tax: $(BENCH_TAX_TARGET)
+	./$(BENCH_TAX_TARGET)
+
+bench-all: bench bench-pipeline bench-trace bench-cow bench-tax
 
 LABS := 01_false_sharing 02_spsc_ring 03_hugepage_tlb 04_syscall_vs_poll 05_doorbell_mock
 
