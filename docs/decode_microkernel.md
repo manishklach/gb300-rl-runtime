@@ -23,8 +23,9 @@ The implementation now has one mathematically real fixed path:
 
 What is still limited:
 
-- the runtime worker still synthesizes a query vector when no explicit
-  query buffer is attached
+- the runtime path now carries explicit query/output buffers, but it
+  still fills them with synthetic host-side data instead of model-owned
+  activations
 - only one fixed shape is supported
 - only one staged KV block is handled in the current real path
 

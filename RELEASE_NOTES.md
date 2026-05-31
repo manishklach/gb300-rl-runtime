@@ -14,8 +14,9 @@ one mathematically real kernel path for a narrow configuration.
 
 Current limitation:
 
-- the runtime worker still falls back to a synthesized query vector when
-  no explicit query buffer is attached to the decode call
+- the runtime path now carries explicit query/output buffers, but it
+  still populates them with synthetic host-side data instead of model
+  activations
 - the real path is still intentionally narrow: one fixed head dimension,
   one staged KV block, one lane-0 style correctness-first implementation
 

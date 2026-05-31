@@ -20,14 +20,27 @@ typedef struct {
   CompletionRing *comp_ring;
   KVArena         kv_arena;
   SampleState    *d_sample_st;
+  __half         *d_query_buf;
+  float          *d_output_buf;
   uint64_t       *d_step_count;
+  uint32_t        io_slots;
 
   int    num_sms;
   int    dev_id;
 } Runtime;
 
 __global__ void decode_worker(CommandRing*, KVArena*, CompletionRing*,
-                              SampleState*, uint64_t*);
+                              SampleState*, const __half*, float*, uint32_t,
+                              uint64_t*);
+
+static void
+fill_query_slot(__half *dst, uint64_t seq_id, uint32_t step) {
+  for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++) {
+    const float v =
+        (float)(((int)((seq_id + 1ULL) * (d + 3U) + step * 7U) % 29) - 14) / 16.0f;
+    dst[d] = __float2half_rn(v);
+  }
+}
 
 static int
 get_sm_count(int dev_id) {
@@ -62,6 +75,10 @@ runtime_init(Runtime *rt, int dev_id, size_t arena_size, size_t block_size) {
   /* allocate device-side step counter */
   cudaMalloc(&rt->d_step_count, sizeof(uint64_t));
   cudaMemset(rt->d_step_count, 0, sizeof(uint64_t));
+  rt->io_slots = RING_SIZE;
+  cudaMalloc(&rt->d_query_buf, rt->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(__half));
+  cudaMalloc(&rt->d_output_buf, rt->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(float));
+  cudaMemset(rt->d_output_buf, 0, rt->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(float));
 
   /* allocate device-side sampling state (one per trajectory, here 1) */
   cudaMalloc(&rt->d_sample_st, sizeof(SampleState));
@@ -84,6 +101,7 @@ runtime_init(Runtime *rt, int dev_id, size_t arena_size, size_t block_size) {
 /* Dispatch one trajectory of n_steps decode steps through the ring. */
 int
 runtime_dispatch(Runtime *rt, uint64_t seq_id, int n_steps, int kv_blocks) {
+  __half q_host[DECODE_FIXED_HEAD_DIM];
   for (int i = 0; i < n_steps; i++) {
     uint32_t pos = ring_acquire(rt->cmd_ring, 1);
     if (pos == UINT32_MAX) {
@@ -92,6 +110,10 @@ runtime_dispatch(Runtime *rt, uint64_t seq_id, int n_steps, int kv_blocks) {
     }
 
     Descriptor desc;
+    uint32_t slot = ((uint32_t)i) & (rt->io_slots - 1U);
+    fill_query_slot(q_host, seq_id, (uint32_t)i);
+    cudaMemcpy(rt->d_query_buf + slot * DECODE_FIXED_HEAD_DIM, q_host,
+               sizeof(q_host), cudaMemcpyHostToDevice);
     desc.seq_id            = seq_id;
     desc.kv_block_offset   = (uint32_t)(i % kv_blocks);
     desc.num_kv_blocks     = 1;
@@ -139,6 +161,8 @@ runtime_shutdown(Runtime *rt) {
 
   cudaFree(rt->d_step_count);
   cudaFree(rt->d_sample_st);
+  cudaFree(rt->d_query_buf);
+  cudaFree(rt->d_output_buf);
   ring_destroy(rt->cmd_ring);
   ring_destroy((CommandRing *)rt->comp_ring);
   arena_destroy(&rt->kv_arena);
@@ -172,7 +196,8 @@ main(int argc, char **argv) {
   int smem_size = 3 * 16384; /* PREFETCH_DEPTH * KV_BLOCK_SIZE */
   decode_worker<<<sms, 32, smem_size>>>(
     rt.cmd_ring, &rt.kv_arena, rt.comp_ring,
-    rt.d_sample_st, rt.d_step_count);
+    rt.d_sample_st, rt.d_query_buf, rt.d_output_buf, rt.io_slots,
+    rt.d_step_count);
 
   /* dispatch work */
   float ms;

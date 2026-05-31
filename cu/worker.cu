@@ -24,16 +24,18 @@ namespace cg = cooperative_groups;
 __device__ static void
 process_descriptor(const Descriptor *desc, KVArena *arena,
                    CompletionRing *comp_ring, SampleState *sample_st,
+                   const __half *q_buffer, float *o_buffer, uint32_t io_slots,
                    uint8_t *smem_buf) {
   uint8_t *kv_src = arena_block_ptr(arena, desc->kv_block_offset);
+  uint32_t slot = io_slots == 0 ? 0U : (desc->output_token_offset & (io_slots - 1U));
   DecodeStepArgs args;
-  args.q_ptr = NULL;
-  args.o_ptr = NULL;
+  args.q_ptr = q_buffer ? (const void *)(q_buffer + slot * DECODE_FIXED_HEAD_DIM) : NULL;
+  args.o_ptr = o_buffer ? (void *)(o_buffer + slot * DECODE_FIXED_HEAD_DIM) : NULL;
   args.seq_len = desc->num_kv_blocks == 0 ? 1U : (uint32_t)desc->num_kv_blocks;
   args.head_dim = DECODE_FIXED_HEAD_DIM;
   args.kv_block_base_idx = desc->kv_block_offset;
   args.kv_block_count = 1;
-  args.output_token_offset = desc->output_token_offset;
+  args.output_token_offset = slot;
   DecodeStepResult result =
       attention_decode_step_fixed128(desc, &args, kv_src, sample_st, smem_buf);
 
@@ -64,6 +66,9 @@ decode_worker(CommandRing   *ring,
               KVArena       *arena,
               CompletionRing *comp_ring,
               SampleState   *sample_st,
+              const __half  *q_buffer,
+              float         *o_buffer,
+              uint32_t       io_slots,
               uint64_t      *step_count) {
   extern __shared__ uint8_t smem_buf[];
 
@@ -104,7 +109,8 @@ decode_worker(CommandRing   *ring,
 
     /* ─── process ─── */
     if (lane == 0) {
-      process_descriptor(&desc, arena, comp_ring, sample_st, smem_buf);
+      process_descriptor(&desc, arena, comp_ring, sample_st,
+                         q_buffer, o_buffer, io_slots, smem_buf);
       if (step_count)
         atomicAdd(step_count, 1ULL);
     }

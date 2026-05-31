@@ -31,7 +31,17 @@
 
 /* ─── Declare persistent worker kernel from worker.cu ──────────── */
 __global__ void decode_worker(CommandRing*, KVArena*, CompletionRing*,
-                              SampleState*, uint64_t*);
+                              SampleState*, const __half*, float*, uint32_t,
+                              uint64_t*);
+
+static void
+fill_runtime_query_slot(__half *dst, uint32_t step) {
+  for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++) {
+    const float v =
+        (float)(((int)((step + 1U) * (d + 9U)) % 41) - 20) / 16.0f;
+    dst[d] = __float2half_rn(v);
+  }
+}
 
 static int
 cuda_is_available(void) {
@@ -364,6 +374,11 @@ bench_full_pipeline(int n_tokens) {
 
   SampleState *d_sample_st;
   cudaMalloc(&d_sample_st, sizeof(SampleState));
+  __half *d_query_buf;
+  float *d_output_buf;
+  cudaMalloc(&d_query_buf, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(__half));
+  cudaMalloc(&d_output_buf, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(float));
+  cudaMemset(d_output_buf, 0, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(float));
   SampleState h_st;
   memset(&h_st, 0, sizeof(h_st));
   h_st.rng_state[0] = 42;
@@ -379,7 +394,8 @@ bench_full_pipeline(int n_tokens) {
   /* launch persistent workers */
   int smem_size = 3 * 16384;
   decode_worker<<<sms, 32, smem_size>>>(
-    cmd_ring, &arena, comp_ring, d_sample_st, d_step_count);
+    cmd_ring, &arena, comp_ring, d_sample_st,
+    d_query_buf, d_output_buf, RING_SIZE, d_step_count);
 
   /* pre-acquire KV blocks */
   int64_t kv_ids[128];
@@ -394,6 +410,7 @@ bench_full_pipeline(int n_tokens) {
   cudaEventRecord(start);
 
   for (int i = 0; i < n_tokens; i++) {
+    __half q_host[DECODE_FIXED_HEAD_DIM];
     uint32_t pos = ring_acquire(cmd_ring, 1);
     if (pos == UINT32_MAX) {
       /* drain some completions */
@@ -402,6 +419,9 @@ bench_full_pipeline(int n_tokens) {
       pos = ring_acquire(cmd_ring, 1);
       assert(pos != UINT32_MAX);
     }
+    fill_runtime_query_slot(q_host, (uint32_t)i);
+    cudaMemcpy(d_query_buf + (((uint32_t)i & (RING_SIZE - 1U)) * DECODE_FIXED_HEAD_DIM),
+               q_host, sizeof(q_host), cudaMemcpyHostToDevice);
     Descriptor desc;
     desc.seq_id            = 1;
     desc.kv_block_offset   = (uint32_t)(i % 128);
@@ -450,6 +470,8 @@ bench_full_pipeline(int n_tokens) {
 
   cudaFree(d_step_count);
   cudaFree(d_sample_st);
+  cudaFree(d_query_buf);
+  cudaFree(d_output_buf);
   ring_destroy(cmd_ring);
   ring_destroy((CommandRing *)comp_ring);
   arena_destroy(&arena);

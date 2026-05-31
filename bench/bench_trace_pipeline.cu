@@ -7,6 +7,7 @@
 #include "ring.h"
 #include "arena.h"
 #include "completion.h"
+#include "attention_decode.h"
 #include "sample.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +16,8 @@
 #include <cuda_runtime.h>
 
 __global__ void decode_worker(CommandRing*, KVArena*, CompletionRing*,
-                              SampleState*, uint64_t*);
+                              SampleState*, const __half*, float*, uint32_t,
+                              uint64_t*);
 
 typedef struct {
     RolloutPipeline  pipeline;
@@ -29,9 +31,21 @@ typedef struct {
     RewardRing       reward_ring;
     uint64_t        *d_step_count;
     SampleState     *d_sample_st;
+    __half          *d_query_buf;
+    float           *d_output_buf;
+    uint32_t         io_slots;
     int              num_sms;
     int              dev_id;
 } BenchContext;
+
+static void fill_query_slot(__half *dst, uint32_t rollout_id, uint32_t step)
+{
+    for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++) {
+        const float v =
+            (float)(((int)((rollout_id + 1U) * (d + 7U) + step * 5U) % 37) - 18) / 16.0f;
+        dst[d] = __float2half_rn(v);
+    }
+}
 
 static uint64_t now_ns(void)
 {
@@ -69,6 +83,10 @@ static int bench_init(BenchContext *ctx, int dev_id, int n_rollouts)
 
     cudaMalloc(&ctx->d_step_count, sizeof(uint64_t));
     cudaMemset(ctx->d_step_count, 0, sizeof(uint64_t));
+    ctx->io_slots = RING_SIZE;
+    cudaMalloc(&ctx->d_query_buf, ctx->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(__half));
+    cudaMalloc(&ctx->d_output_buf, ctx->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(float));
+    cudaMemset(ctx->d_output_buf, 0, ctx->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(float));
 
     cudaMalloc(&ctx->d_sample_st, sizeof(SampleState));
     SampleState h_st;
@@ -86,7 +104,8 @@ static int bench_init(BenchContext *ctx, int dev_id, int n_rollouts)
     int smem_size = 3 * 16384;
     decode_worker<<<ctx->num_sms, 32, smem_size>>>(
         ctx->cmd_ring, &ctx->kv_arena, ctx->comp_ring,
-        ctx->d_sample_st, ctx->d_step_count);
+        ctx->d_sample_st, ctx->d_query_buf, ctx->d_output_buf, ctx->io_slots,
+        ctx->d_step_count);
 
     return 0;
 }
@@ -110,6 +129,8 @@ static void bench_shutdown(BenchContext *ctx)
 
     cudaFree(ctx->d_step_count);
     cudaFree(ctx->d_sample_st);
+    cudaFree(ctx->d_query_buf);
+    cudaFree(ctx->d_output_buf);
     ring_destroy(ctx->cmd_ring);
     ring_destroy((CommandRing *)ctx->comp_ring);
     arena_destroy(&ctx->kv_arena);
@@ -120,6 +141,7 @@ static int dispatch_decode_step(BenchContext *ctx, uint32_t rollout_id,
                                 uint32_t total_tokens)
 {
     (void)total_tokens;
+    __half q_host[DECODE_FIXED_HEAD_DIM];
     uint32_t pos = ring_acquire(ctx->cmd_ring, 1);
     if (pos == UINT32_MAX) {
         METRIC_INC(ctx->metrics, ring_full_spins);
@@ -135,6 +157,10 @@ static int dispatch_decode_step(BenchContext *ctx, uint32_t rollout_id,
     }
 
     Descriptor desc;
+    uint32_t slot = step & (ctx->io_slots - 1U);
+    fill_query_slot(q_host, rollout_id, step);
+    cudaMemcpy(ctx->d_query_buf + slot * DECODE_FIXED_HEAD_DIM, q_host,
+               sizeof(q_host), cudaMemcpyHostToDevice);
     desc.seq_id            = rollout_id;
     desc.kv_block_offset   = kv_block;
     desc.num_kv_blocks     = 1;
