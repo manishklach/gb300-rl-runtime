@@ -1,24 +1,74 @@
 # Release Notes
 
-## Unreleased
+## v0.3.2
 
-### Benchmark Readiness Pass
+This release focuses on benchmark readiness, CPU-only verification, and
+non-GPU CUDA validation. It does not claim new end-to-end performance
+results yet; instead, it strengthens the artifact so measured numbers
+can be added with less ambiguity and less breakage risk.
 
-- added `bench/bench_prefetch.cu` and `make bench-prefetch` to isolate
-  global-to-shared KV staging bandwidth from the rest of the decode
-  path
-- added `lab/06_memory_ordering`, a standalone publication-ordering lab
-  that demonstrates stale-descriptor windows in a broken relaxed
-  publish path versus the runtime's release/acquire contract
-- added `.github/workflows/ci.yml` plus `make ci-build` / `make ci-run`
-  so the CPU control-plane path, smoke tests, and Linux-safe labs run
-  in GitHub Actions without a GPU
-- added `make cuda-compile-check` and `make cuda-ptx-check` so machines
-  with the CUDA toolkit but no attached GPU can still validate `nvcc`
-  compilation and PTX emission
-- updated README and metrics docs to keep benchmark placeholders honest:
-  the snapshot table is still a run-on-your-hardware template until
-  real measured numbers are committed
+### Highlights
+
+- added a dedicated `bench-prefetch` CUDA microbenchmark to isolate
+  global-to-shared KV staging cost from the rest of the decode path
+- added `lab/06_memory_ordering`, a standalone experiment that makes
+  the runtime's release/acquire publication rules visible and testable
+- added CPU-only GitHub Actions coverage via `.github/workflows/ci.yml`
+- added `cuda-compile-check` and `cuda-ptx-check` targets for machines
+  that have the CUDA toolkit but no attached GPU
+- tightened README and benchmark docs so placeholders are clearly
+  labeled as hardware-to-fill measurements rather than published claims
+
+### Benchmarks and Validation
+
+- added `bench/bench_prefetch.cu` and `make bench-prefetch` to compare a
+  baseline shared-memory staging path against a `cp.async`-based path
+- added `make ci-build` and `make ci-run` so the control-plane code,
+  smoke tests, and CPU-safe labs can be built and exercised in one
+  repeatable path
+- added `make cuda-compile-check` to compile the CUDA runtime, CUDA test
+  entrypoint, and CUDA benchmark entrypoints with `nvcc` without
+  requiring GPU execution
+- added `make cuda-ptx-check` to emit PTX for the core device-heavy CUDA
+  translation units for low-level inspection
+
+### Lab and Documentation Improvements
+
+- added `lab/06_memory_ordering` to demonstrate the difference between a
+  broken relaxed publish and the runtime's correct release/acquire
+  publication contract
+- updated the lab Makefiles to use a stricter C11 build mode and accept
+  `ARGS`, which makes the labs more portable and easier to run in CI
+- updated README, `docs/metrics.md`, and release notes so the repo now
+  documents:
+  - the sixth lab
+  - `bench-prefetch`
+  - `ci-build` / `ci-run`
+  - `cuda-compile-check` / `cuda-ptx-check`
+
+### CPU-Path Fixes Surfaced by CI
+
+The new CPU verification path exposed several issues that were fixed as
+part of this release:
+
+- fixed `bench_control_tax.cu` so its polling modes use real helper
+  threads instead of hanging in a self-polled loop
+- fixed lab 4's `eventfd` consumer to handle coalesced wakeups
+  correctly
+- fixed lab 4's polling path to use a proper atomic handshake rather
+  than a lossy single-bit overwrite pattern
+- fixed multiple lab build issues under stricter Linux/C11 compilation,
+  including alignment declarations and one thread/timer naming conflict
+
+### Benchmark Honesty
+
+- the benchmark snapshot remains intentionally conservative: it is still
+  a run-on-your-hardware template until real measured numbers are
+  checked in
+- the repo now distinguishes more clearly between:
+  - CPU-only correctness and control-plane verification
+  - `nvcc` compile/PTX validation without a GPU
+  - actual CUDA runtime benchmarking on real hardware
 
 ## v0.3.1
 
