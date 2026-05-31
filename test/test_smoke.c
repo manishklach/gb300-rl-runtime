@@ -1,5 +1,6 @@
 #include "ring.h"
 #include "completion.h"
+#include "pipeline.h"
 #include "request.h"
 #include <assert.h>
 #include <stdio.h>
@@ -173,6 +174,36 @@ static void test_done_ring_overflow(void)
     printf("OK\n");
 }
 
+static void test_pipeline_snapshot_and_batch(void)
+{
+    printf("  test_pipeline_snapshot_and_batch ... ");
+    RolloutPipeline pipeline;
+    PipelineSnapshot snap;
+    uint32_t rid0, rid1, rid2;
+
+    assert(pipeline_init(&pipeline) == 0);
+    assert(rollout_alloc(&pipeline.slab, &rid0) == 0);
+    assert(rollout_alloc(&pipeline.slab, &rid1) == 0);
+    assert(rollout_alloc(&pipeline.slab, &rid2) == 0);
+
+    pipeline_credits_set(&pipeline, 2, 4, 4, 32);
+    assert(pipeline_try_push(&pipeline, Q_DECODE, rid0) == 0);
+    assert(pipeline_try_push(&pipeline, Q_DECODE, rid1) == 0);
+    assert(pipeline_try_push(&pipeline, Q_DECODE, rid2) == -1);
+
+    pipeline_snapshot(&pipeline, &snap);
+    assert(snap.queue_occupancy[Q_DECODE] == 2);
+    assert(snap.stage_credit_headroom[Q_DECODE] == 0);
+    assert(pipeline_stage_target_batch(&pipeline, Q_DECODE, 8) == 0);
+
+    pipeline_release(&pipeline, Q_DECODE, 1);
+    pipeline_snapshot(&pipeline, &snap);
+    assert(snap.stage_credit_headroom[Q_DECODE] == 1);
+    assert(pipeline_stage_target_batch(&pipeline, Q_DECODE, 8) == 1);
+
+    printf("OK\n");
+}
+
 int main(void)
 {
     printf("GB300 RL Runtime — CPU Smoke Tests\n\n");
@@ -183,6 +214,7 @@ int main(void)
     test_ring_no_permanent_full();
     test_completion_ring_overflow();
     test_done_ring_overflow();
+    test_pipeline_snapshot_and_batch();
     printf("\nAll smoke tests passed.\n");
     return 0;
 }

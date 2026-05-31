@@ -26,7 +26,7 @@ typedef struct __attribute__((packed)) {
     uint32_t pad;
 } rollout_t;
 
-_Static_assert(sizeof(rollout_t) == 40, "rollout_t must be 40 bytes");
+_Static_assert(sizeof(rollout_t) == 48, "rollout_t must be 48 bytes");
 
 typedef struct {
     rollout_t slots[MAX_ROLLOUTS];

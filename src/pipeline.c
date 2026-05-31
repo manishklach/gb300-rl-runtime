@@ -196,3 +196,56 @@ pipeline_occupancy(const RolloutPipeline *p, pipeline_q_t q)
     uint32_t h = atomic_load_explicit(&r->prod.head, memory_order_relaxed);
     return h - t;
 }
+
+uint32_t
+pipeline_stage_available_credits(const RolloutPipeline *p, pipeline_q_t q)
+{
+    if (!p)
+        return 0;
+
+    const PipelineCredits *c = &p->credits;
+    switch (q) {
+    case Q_DECODE:
+        return c->max_decode_credits > c->decode_used ?
+               (c->max_decode_credits - c->decode_used) : 0U;
+    case Q_REWARD:
+        return c->max_reward_credits > c->reward_used ?
+               (c->max_reward_credits - c->reward_used) : 0U;
+    case Q_TRAJECTORY:
+        return c->max_trajectory_credits > c->trajectory_used ?
+               (c->max_trajectory_credits - c->trajectory_used) : 0U;
+    default:
+        return UINT32_MAX;
+    }
+}
+
+uint32_t
+pipeline_stage_target_batch(const RolloutPipeline *p, pipeline_q_t q,
+                            uint32_t max_batch)
+{
+    uint32_t occ = pipeline_occupancy(p, q);
+    uint32_t credit = pipeline_stage_available_credits(p, q);
+    uint32_t limit = max_batch;
+
+    if (credit != UINT32_MAX && credit < limit)
+        limit = credit;
+    if (occ < limit)
+        limit = occ;
+    return limit;
+}
+
+void
+pipeline_snapshot(const RolloutPipeline *p, PipelineSnapshot *snap)
+{
+    if (!p || !snap)
+        return;
+
+    memset(snap, 0, sizeof(*snap));
+    for (int q = 0; q < Q_COUNT; q++) {
+        snap->queue_occupancy[q] = pipeline_occupancy(p, (pipeline_q_t)q);
+        snap->stage_credit_headroom[q] =
+            pipeline_stage_available_credits(p, (pipeline_q_t)q);
+    }
+    snap->credits = p->credits;
+    snap->policy = p->policy;
+}

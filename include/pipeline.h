@@ -51,6 +51,13 @@ typedef struct {
     SchedulePolicy  policy;
 } RolloutPipeline;
 
+typedef struct {
+    uint32_t queue_occupancy[Q_COUNT];
+    uint32_t stage_credit_headroom[Q_COUNT];
+    PipelineCredits credits;
+    SchedulePolicy policy;
+} PipelineSnapshot;
+
 int  pipeline_init(RolloutPipeline *p);
 int  pipeline_push(RolloutPipeline *p, pipeline_q_t q, uint32_t rollout_id);
 int  pipeline_pop(RolloutPipeline *p, pipeline_q_t q, uint32_t *out_id);
@@ -68,6 +75,10 @@ void pipeline_set_schedule_policy(RolloutPipeline *p, SchedulePolicy policy);
 int  pipeline_schedule(RolloutPipeline *p, pipeline_q_t q, uint32_t *out_id);
 
 uint32_t pipeline_occupancy(const RolloutPipeline *p, pipeline_q_t q);
+uint32_t pipeline_stage_available_credits(const RolloutPipeline *p, pipeline_q_t q);
+uint32_t pipeline_stage_target_batch(const RolloutPipeline *p, pipeline_q_t q,
+                                     uint32_t max_batch);
+void pipeline_snapshot(const RolloutPipeline *p, PipelineSnapshot *snap);
 
 static inline const char *pipeline_q_name(pipeline_q_t q)
 {

@@ -20,6 +20,8 @@ The implementation now has one mathematically real fixed path:
 - fixed128 decode executes real QK / softmax / V accumulation math
 - the fixed128 kernel is now warp-cooperative instead of almost entirely
   lane-0 driven
+- the QK score pass now uses 8-lane groups per token row rather than
+  assigning an entire row to one lane
 - the decode benchmark exercises explicit query and output buffers
 - the CUDA test suite compares the kernel output against a host reference
 
@@ -34,8 +36,9 @@ What is still limited:
   scaffolding rather than trained parameters
 - only one fixed shape is supported
 - only one staged KV block is handled in the current real path
-- the score pass still maps one lane to one token row, so further kernel
-  parallelization work is still ahead
+- the score pass now uses 8-lane row groups, but it is still a
+  single-warp cooperative path, so further kernel parallelization work
+  is still ahead
 
 ## Fixed Path
 

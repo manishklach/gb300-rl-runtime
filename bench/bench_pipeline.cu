@@ -40,6 +40,18 @@ typedef struct {
     int              dev_id;
 } BenchContext;
 
+static void report_pipeline_window(const RolloutPipeline *pipeline, uint32_t max_decode_batch)
+{
+    PipelineSnapshot snap;
+    pipeline_snapshot(pipeline, &snap);
+    printf("  Decode queue occupancy: %u\n", snap.queue_occupancy[Q_DECODE]);
+    printf("  Decode credit headroom: %u\n",
+           snap.stage_credit_headroom[Q_DECODE] == UINT32_MAX ?
+           0U : snap.stage_credit_headroom[Q_DECODE]);
+    printf("  Suggested decode batch: %u\n",
+           pipeline_stage_target_batch(pipeline, Q_DECODE, max_decode_batch));
+}
+
 static uint64_t now_ns(void)
 {
     struct timespec ts;
@@ -219,6 +231,7 @@ int main(int argc, char **argv)
     uint64_t t0 = now_ns();
     PageFaultSnapshot pf_start, pf_end, pf_delta;
     metrics_snapshot_page_faults(&pf_start);
+    pipeline_credits_set(&ctx.pipeline, 256, 128, 128, 1024);
 
     for (int r = 0; r < n_rollouts; r++) {
         uint32_t rid;
@@ -282,6 +295,7 @@ int main(int argc, char **argv)
     ctx.metrics.completion_overflow_attempts = ctx.comp_ring->overflow.value;
 
     metrics_fprintf(stdout, &ctx.metrics, wall_ns, n_tokens, n_rollouts);
+    report_pipeline_window(&ctx.pipeline, 32);
 
     printf("\n  Completions drained:  %lu\n", (unsigned long)comps);
     printf("  Wrapper-tracked mallocs: %lu\n",

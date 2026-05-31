@@ -18,6 +18,12 @@ typedef struct {
   uint32_t phase;            /* pipeline phase counter */
 } PrefetchSlot;
 
+typedef struct {
+  uint8_t *smem_base;
+  uint32_t stage_count;
+  uint32_t stage_bytes;
+} PrefetchPipelineState;
+
 /* Host-side: initialize the pipeline state.
  * Allocates PREFETCH_DEPTH * KV_BLOCK_SIZE of shared memory per SM. */
 void prefetch_init(int smem_per_sm);
@@ -28,3 +34,14 @@ __device__ void prefetch_issue(const uint8_t *hbm_src, uint8_t *smem_dst);
 
 /* Device-side: wait for the oldest in-flight prefetch to complete. */
 __device__ void prefetch_wait(void);
+__device__ void prefetch_pipeline_init(PrefetchPipelineState *state,
+                                       uint8_t *smem_base,
+                                       uint32_t stage_count,
+                                       uint32_t stage_bytes);
+__device__ uint8_t *prefetch_pipeline_stage_ptr(const PrefetchPipelineState *state,
+                                                uint32_t stage_idx);
+__device__ void prefetch_pipeline_stage(PrefetchPipelineState *state,
+                                        uint32_t stage_idx,
+                                        const uint8_t *hbm_src);
+__device__ void prefetch_pipeline_wait_stage(PrefetchPipelineState *state,
+                                             uint32_t stage_idx);

@@ -33,6 +33,39 @@ prefetch_wait(void) {
 #endif
 }
 
+__device__ void
+prefetch_pipeline_init(PrefetchPipelineState *state,
+                       uint8_t *smem_base,
+                       uint32_t stage_count,
+                       uint32_t stage_bytes) {
+  state->smem_base = smem_base;
+  state->stage_count = stage_count;
+  state->stage_bytes = stage_bytes;
+}
+
+__device__ uint8_t *
+prefetch_pipeline_stage_ptr(const PrefetchPipelineState *state,
+                            uint32_t stage_idx) {
+  const uint32_t bounded =
+      state->stage_count == 0 ? 0U : (stage_idx % state->stage_count);
+  return state->smem_base + bounded * state->stage_bytes;
+}
+
+__device__ void
+prefetch_pipeline_stage(PrefetchPipelineState *state,
+                        uint32_t stage_idx,
+                        const uint8_t *hbm_src) {
+  prefetch_issue(hbm_src, prefetch_pipeline_stage_ptr(state, stage_idx));
+}
+
+__device__ void
+prefetch_pipeline_wait_stage(PrefetchPipelineState *state,
+                             uint32_t stage_idx) {
+  (void)state;
+  (void)stage_idx;
+  prefetch_wait();
+}
+
 /* ─── Host-side init ───────────────────────────────────────────── */
 
 void

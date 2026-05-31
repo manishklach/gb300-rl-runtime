@@ -89,8 +89,8 @@ $(BENCH_DECODE_TARGET): $(BENCH_DECODE_SRC) $(BLDDIR)/libruntime.a
 $(BENCH_KV_LAYOUT_TARGET): $(BENCH_KV_LAYOUT_SRC) $(BLDDIR)/libruntime.a
 	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
 
-$(SMOKE_TARGET): $(SMOKE_SRC) $(SRCDIR)/ring.c $(BLDDIR)
-	$(CC) $(CFLAGS) $(SMOKE_SRC) $(SRCDIR)/ring.c -o $@
+$(SMOKE_TARGET): $(SMOKE_SRC) $(SRCDIR)/ring.c $(SRCDIR)/pipeline.c $(SRCDIR)/rollout.c $(BLDDIR)
+	$(CC) $(CFLAGS) $(SMOKE_SRC) $(SRCDIR)/ring.c $(SRCDIR)/pipeline.c $(SRCDIR)/rollout.c -o $@
 
 smoke: $(SMOKE_TARGET)
 	./$(SMOKE_TARGET)

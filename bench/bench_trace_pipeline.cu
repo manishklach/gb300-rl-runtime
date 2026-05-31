@@ -42,6 +42,15 @@ typedef struct {
     int              dev_id;
 } BenchContext;
 
+static void trace_pipeline_window(const RolloutPipeline *pipeline, TraceRing *trace,
+                                  uint32_t max_decode_batch)
+{
+    PipelineSnapshot snap;
+    pipeline_snapshot(pipeline, &snap);
+    trace_push(trace, TRACE_PIPELINE_PUSH, snap.queue_occupancy[Q_DECODE],
+               pipeline_stage_target_batch(pipeline, Q_DECODE, max_decode_batch));
+}
+
 static uint64_t now_ns(void)
 {
     struct timespec ts;
@@ -230,6 +239,7 @@ int main(int argc, char **argv)
     hp_guard_activate(&ctx.hp_guard);
 
     uint64_t t0 = now_ns();
+    pipeline_credits_set(&ctx.pipeline, 256, 128, 128, 1024);
 
     for (int r = 0; r < n_rollouts; r++) {
         uint32_t rid;
@@ -295,6 +305,7 @@ int main(int argc, char **argv)
     uint64_t wall_ns = t1 - t0;
 
     ctx.metrics.completion_overflow_attempts = ctx.comp_ring->overflow.value;
+    trace_pipeline_window(&ctx.pipeline, &ctx.trace, 32);
 
     metrics_fprintf(stdout, &ctx.metrics, wall_ns, n_tokens, n_rollouts);
 

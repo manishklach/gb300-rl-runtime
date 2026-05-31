@@ -11,6 +11,9 @@ typedef struct {
     uint32_t best_idx[32];
 } DecodeWarpScratch;
 
+#define DECODE_QK_GROUP_SIZE 8U
+#define DECODE_QK_ROWS_PER_WARP (32U / DECODE_QK_GROUP_SIZE)
+
 __device__ static float
 decode_synth_query_component(const Descriptor *desc,
                              const SampleState *sample_st,
@@ -67,8 +70,12 @@ attention_decode_step_fixed128(const Descriptor *desc,
 
     decode_load_query(scratch.q_vec, desc, args, sample_st);
     __sync_warp();
-    prefetch_issue(kv_block_base, smem_buf);
-    prefetch_wait();
+    if (lane == 0)
+        prefetch_issue(kv_block_base, smem_buf);
+    __sync_warp();
+    if (lane == 0)
+        prefetch_wait();
+    __sync_warp();
 
     uint32_t seq_len = (args && args->seq_len != 0U) ? args->seq_len : 1U;
     if (seq_len > KV_LAYOUT_TOKENS_PER_BLOCK)
@@ -78,17 +85,26 @@ attention_decode_step_fixed128(const Descriptor *desc,
     const __half *v_block = (const __half *)(smem_buf + kv_layout_v_plane_base_bytes());
     const float scale = rsqrtf((float)DECODE_FIXED_HEAD_DIM);
 
-    float lane_score = -CUDART_INF_F;
-    if (lane < seq_len) {
-        float dot = 0.0f;
-        const __half *k_row = k_block + lane * DECODE_FIXED_HEAD_DIM;
-        for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++)
-            dot += scratch.q_vec[d] * __half2float(k_row[d]);
-        lane_score = dot * scale;
-        scratch.scores[lane] = lane_score;
+    const uint32_t group = lane / DECODE_QK_GROUP_SIZE;
+    const uint32_t lane_in_group = lane % DECODE_QK_GROUP_SIZE;
+    for (uint32_t base_t = 0; base_t < seq_len; base_t += DECODE_QK_ROWS_PER_WARP) {
+        const uint32_t t = base_t + group;
+        float partial = 0.0f;
+        if (t < seq_len) {
+            const __half *k_row = k_block + t * DECODE_FIXED_HEAD_DIM;
+            for (uint32_t d = lane_in_group; d < DECODE_FIXED_HEAD_DIM; d += DECODE_QK_GROUP_SIZE)
+                partial += scratch.q_vec[d] * __half2float(k_row[d]);
+        }
+
+        for (uint32_t offset = DECODE_QK_GROUP_SIZE / 2U; offset > 0; offset >>= 1)
+            partial += __shfl_down_sync(0xFFFFFFFFU, partial, offset, DECODE_QK_GROUP_SIZE);
+
+        if (lane_in_group == 0U && t < seq_len)
+            scratch.scores[t] = partial * scale;
     }
     __sync_warp();
 
+    float lane_score = lane < seq_len ? scratch.scores[lane] : -CUDART_INF_F;
     float max_score = lane_score;
     for (int offset = 16; offset > 0; offset >>= 1)
         max_score = fmaxf(max_score, __shfl_down_sync(0xFFFFFFFFU, max_score, offset));

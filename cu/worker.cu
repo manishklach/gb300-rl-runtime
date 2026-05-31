@@ -27,6 +27,8 @@ process_descriptor(const Descriptor *desc, KVArena *arena,
                    const __half *q_buffer, float *o_buffer, uint32_t io_slots,
                    uint8_t *smem_buf) {
   uint8_t *kv_src = arena_block_ptr(arena, desc->kv_block_offset);
+  PrefetchPipelineState pf_state;
+  uint32_t lane = threadIdx.x & 31;
   uint32_t slot = io_slots == 0 ? 0U : (desc->output_token_offset & (io_slots - 1U));
   DecodeStepArgs args;
   args.q_ptr = q_buffer ? (const void *)(q_buffer + slot * DECODE_FIXED_HEAD_DIM) : NULL;
@@ -36,18 +38,22 @@ process_descriptor(const Descriptor *desc, KVArena *arena,
   args.kv_block_base_idx = desc->kv_block_offset;
   args.kv_block_count = 1;
   args.output_token_offset = slot;
+  prefetch_pipeline_init(&pf_state, smem_buf, PREFETCH_DEPTH, KV_BLOCK_SIZE);
   DecodeStepResult result =
-      attention_decode_step_fixed128(desc, &args, kv_src, sample_st, smem_buf);
+      attention_decode_step_fixed128(desc, &args, kv_src, sample_st,
+                                     prefetch_pipeline_stage_ptr(&pf_state, 0));
 
-  Completion comp;
-  comp.seq_id          = desc->seq_id;
-  comp.token_id        = result.token_id;
-  comp.kv_block_offset = desc->kv_block_offset;
-  comp.reward_cookie   = desc->reward_cookie;
-  comp.cycles_taken    = result.cycle_estimate;
+  if (lane == 0) {
+    Completion comp;
+    comp.seq_id          = desc->seq_id;
+    comp.token_id        = result.token_id;
+    comp.kv_block_offset = desc->kv_block_offset;
+    comp.reward_cookie   = desc->reward_cookie;
+    comp.cycles_taken    = result.cycle_estimate;
 
-  while (comp_ring_push(comp_ring, &comp) != 0)
-    __nanosleep(100);
+    while (comp_ring_push(comp_ring, &comp) != 0)
+      __nanosleep(100);
+  }
 }
 
 /* ─── Persistent decode worker kernel ────────────────────────────
@@ -108,11 +114,9 @@ decode_worker(CommandRing   *ring,
       break;
 
     /* ─── process ─── */
-    if (lane == 0) {
-      process_descriptor(&desc, arena, comp_ring, sample_st,
-                         q_buffer, o_buffer, io_slots, smem_buf);
-      if (step_count)
-        atomicAdd(step_count, 1ULL);
-    }
+    process_descriptor(&desc, arena, comp_ring, sample_st,
+                       q_buffer, o_buffer, io_slots, smem_buf);
+    if (lane == 0 && step_count)
+      atomicAdd(step_count, 1ULL);
   }
 }

@@ -1,5 +1,29 @@
 # Release Notes
 
+## v0.2.2-f
+
+This checkpoint adds another layer of pipelining work around the decode
+path, both inside the kernel and in the host control plane.
+
+- the fixed128 score pass now uses 8-lane groups so each token row is
+  computed cooperatively instead of by a single lane
+- added prefetch-pipeline helper structs/functions in
+  `include/prefetch.h` and `cu/prefetch.cu` so worker-side staging code
+  has explicit pipeline state instead of raw shared-memory pointers
+- added pipeline snapshot and batch-window helpers in
+  `include/pipeline.h` and `src/pipeline.c`
+- expanded the CPU smoke target to compile pipeline/rollout code too,
+  which also surfaced and fixed the stale `rollout_t` size assertion
+- pipeline benchmarks now report or trace decode queue occupancy,
+  credit headroom, and a suggested decode batch window
+
+Current limitation:
+
+- the decode kernel is still a single-warp path for one fixed shape and
+  one staged KV block
+- the new host-side pipeline helpers expose queue/batch state, but they
+  do not yet drive a fully batched decode scheduler
+
 ## v0.2.2-e
 
 This checkpoint makes the fixed128 decode kernel less reference-style
