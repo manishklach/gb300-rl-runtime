@@ -6,6 +6,7 @@
 #include "ring.h"
 #include "arena.h"
 #include "completion.h"
+#include "decode_batch.h"
 #include "attention_decode.h"
 #include "model_state.h"
 #include "query_producer.h"
@@ -152,41 +153,50 @@ static void bench_shutdown(BenchContext *ctx)
     arena_destroy(&ctx->kv_arena);
 }
 
-static int dispatch_decode_step(BenchContext *ctx, uint32_t rollout_id,
-                                uint32_t step, uint32_t kv_block,
-                                uint32_t total_tokens)
+static int dispatch_decode_window(BenchContext *ctx, uint32_t rollout_id,
+                                  uint32_t step_start, uint32_t step_count,
+                                  uint32_t kv_block_base,
+                                  uint32_t total_tokens)
 {
+    DecodeDispatchBatch batch;
     (void)total_tokens;
-    uint32_t pos = ring_acquire(ctx->cmd_ring, 1);
-    if (pos == UINT32_MAX) {
+    decode_batch_reset(&batch);
+
+    if (step_count > DECODE_DESCRIPTOR_BATCH_LIMIT)
+        step_count = DECODE_DESCRIPTOR_BATCH_LIMIT;
+
+    while (batch.count < step_count) {
+        Descriptor desc;
+        uint32_t step = step_start + batch.count;
+        uint32_t kv_block = (kv_block_base + batch.count) % 128U;
+        uint32_t slot = step & (ctx->io_slots - 1U);
+        if (model_state_prepare_slot(&ctx->model_state, ctx->io_slots, rollout_id,
+                                     step, slot) != 0)
+            return -1;
+        if (query_producer_prepare_slot(ctx->model_state.hidden_buf, ctx->d_query_buf,
+                                        ctx->d_query_proj, ctx->io_slots,
+                                        slot) != 0)
+            return -1;
+        desc.seq_id            = rollout_id;
+        desc.kv_block_offset   = kv_block;
+        desc.num_kv_blocks     = 1;
+        desc.attention_flags   = 0;
+        desc.pad               = 0;
+        desc.output_token_offset = step;
+        desc.reward_cookie     = (uint64_t)rollout_id << 32 | step;
+        if (decode_batch_push(&batch, &desc) != 0)
+            return -1;
+    }
+
+    if (decode_batch_submit(ctx->cmd_ring, &batch) != 0) {
         METRIC_INC(ctx->metrics, ring_full_spins);
         Completion c;
         while (comp_ring_poll(ctx->comp_ring, &c))
             METRIC_INC(ctx->metrics, descriptors_consumed);
-        pos = ring_acquire(ctx->cmd_ring, 1);
-        if (pos == UINT32_MAX)
+        if (decode_batch_submit(ctx->cmd_ring, &batch) != 0)
             return -1;
     }
-
-    Descriptor desc;
-    uint32_t slot = step & (ctx->io_slots - 1U);
-    if (model_state_prepare_slot(&ctx->model_state, ctx->io_slots, rollout_id,
-                                 step, slot) != 0)
-        return -1;
-    if (query_producer_prepare_slot(ctx->model_state.hidden_buf, ctx->d_query_buf,
-                                    ctx->d_query_proj, ctx->io_slots,
-                                    slot) != 0)
-        return -1;
-    desc.seq_id            = rollout_id;
-    desc.kv_block_offset   = kv_block;
-    desc.num_kv_blocks     = 1;
-    desc.attention_flags   = 0;
-    desc.pad               = 0;
-    desc.output_token_offset = step;
-    desc.reward_cookie     = (uint64_t)rollout_id << 32 | step;
-    ctx->cmd_ring->slots[pos] = desc;
-    ring_commit(ctx->cmd_ring, 1);
-    METRIC_INC(ctx->metrics, descriptors_posted);
+    __atomic_add_fetch(&ctx->metrics.descriptors_posted, batch.count, __ATOMIC_RELAXED);
     return 0;
 }
 
@@ -267,13 +277,16 @@ static int schedule_decode_batches(BenchContext *ctx, uint32_t batch_max,
     for (uint32_t i = 0; i < launched; i++) {
         const uint32_t rid = rollout_ids[i];
         int kv_block = (int)(rid % 128U);
-        for (int t = 0; t < (int)tokens_per_rollout; t++) {
-            if (dispatch_decode_step(ctx, rid, (uint32_t)t, (uint32_t)kv_block,
-                                     tokens_per_rollout) != 0) {
+        for (uint32_t t = 0; t < tokens_per_rollout; t += DECODE_DESCRIPTOR_BATCH_LIMIT) {
+            uint32_t window = tokens_per_rollout - t;
+            if (window > DECODE_DESCRIPTOR_BATCH_LIMIT)
+                window = DECODE_DESCRIPTOR_BATCH_LIMIT;
+            if (dispatch_decode_window(ctx, rid, t, window, (uint32_t)kv_block,
+                                       tokens_per_rollout) != 0) {
                 METRIC_INC(&ctx->metrics, pipeline_overflow);
                 break;
             }
-            kv_block = (kv_block + 1) % 128;
+            kv_block = (kv_block + (int)window) % 128;
         }
         finish_rollout(ctx, rid, tokens_per_rollout);
     }

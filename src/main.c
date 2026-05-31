@@ -1,6 +1,7 @@
 #include "ring.h"
 #include "arena.h"
 #include "completion.h"
+#include "decode_batch.h"
 #include "numa.h"
 #include "attention_decode.h"
 #include "model_state.h"
@@ -105,36 +106,40 @@ runtime_init(Runtime *rt, int dev_id, size_t arena_size, size_t block_size) {
 /* Dispatch one trajectory of n_steps decode steps through the ring. */
 int
 runtime_dispatch(Runtime *rt, uint64_t seq_id, int n_steps, int kv_blocks) {
-  for (int i = 0; i < n_steps; i++) {
-    uint32_t pos = ring_acquire(rt->cmd_ring, 1);
-    if (pos == UINT32_MAX) {
-      fprintf(stderr, "ring full at step %d\n", i);
-      return -1;
+  for (int i = 0; i < n_steps; ) {
+    DecodeDispatchBatch batch;
+    decode_batch_reset(&batch);
+
+    while (i < n_steps && batch.count < DECODE_DESCRIPTOR_BATCH_LIMIT) {
+      Descriptor desc;
+      uint32_t slot = ((uint32_t)i) & (rt->io_slots - 1U);
+      if (model_state_prepare_slot(&rt->model_state, rt->io_slots, seq_id,
+                                   (uint32_t)i, slot) != 0) {
+        fprintf(stderr, "model state update failed at step %d\n", i);
+        return -1;
+      }
+      if (query_producer_prepare_slot(rt->model_state.hidden_buf, rt->d_query_buf,
+                                      rt->d_query_proj, rt->io_slots,
+                                      slot) != 0) {
+        fprintf(stderr, "query producer failed at step %d\n", i);
+        return -1;
+      }
+      desc.seq_id            = seq_id;
+      desc.kv_block_offset   = (uint32_t)(i % kv_blocks);
+      desc.num_kv_blocks     = 1;
+      desc.attention_flags   = 0;
+      desc.pad               = 0;
+      desc.output_token_offset = (uint32_t)i;
+      desc.reward_cookie     = (uint64_t)seq_id << 32 | i;
+      if (decode_batch_push(&batch, &desc) != 0)
+        break;
+      i++;
     }
 
-    Descriptor desc;
-    uint32_t slot = ((uint32_t)i) & (rt->io_slots - 1U);
-    if (model_state_prepare_slot(&rt->model_state, rt->io_slots, seq_id,
-                                 (uint32_t)i, slot) != 0) {
-      fprintf(stderr, "model state update failed at step %d\n", i);
+    if (decode_batch_submit(rt->cmd_ring, &batch) != 0) {
+      fprintf(stderr, "ring full while submitting batch ending at step %d\n", i);
       return -1;
     }
-    if (query_producer_prepare_slot(rt->model_state.hidden_buf, rt->d_query_buf,
-                                    rt->d_query_proj, rt->io_slots,
-                                    slot) != 0) {
-      fprintf(stderr, "query producer failed at step %d\n", i);
-      return -1;
-    }
-    desc.seq_id            = seq_id;
-    desc.kv_block_offset   = (uint32_t)(i % kv_blocks);
-    desc.num_kv_blocks     = 1;
-    desc.attention_flags   = 0;
-    desc.pad               = 0;
-    desc.output_token_offset = (uint32_t)i;
-    desc.reward_cookie     = (uint64_t)seq_id << 32 | i;
-
-    rt->cmd_ring->slots[pos] = desc;
-    ring_commit(rt->cmd_ring, 1);
   }
   return 0;
 }

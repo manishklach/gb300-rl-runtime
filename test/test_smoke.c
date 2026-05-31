@@ -1,5 +1,6 @@
 #include "ring.h"
 #include "completion.h"
+#include "decode_batch.h"
 #include "pipeline.h"
 #include "request.h"
 #include <assert.h>
@@ -204,6 +205,41 @@ static void test_pipeline_snapshot_and_batch(void)
     printf("OK\n");
 }
 
+static void test_decode_descriptor_batch_submit(void)
+{
+    printf("  test_decode_descriptor_batch_submit ... ");
+    CommandRing *ring = ring_create();
+    DecodeDispatchBatch batch;
+    Descriptor d;
+
+    assert(ring);
+    decode_batch_reset(&batch);
+
+    memset(&d, 0, sizeof(d));
+    d.seq_id = 11;
+    d.output_token_offset = 3;
+    assert(decode_batch_push(&batch, &d) == 0);
+    d.seq_id = 12;
+    d.output_token_offset = 4;
+    assert(decode_batch_push(&batch, &d) == 0);
+    d.seq_id = 13;
+    d.output_token_offset = 5;
+    assert(decode_batch_push(&batch, &d) == 0);
+
+    assert(decode_batch_submit(ring, &batch) == 0);
+    assert(ring->prod.tail == 3);
+
+    assert(ring_consume(ring, &d) == 1);
+    assert(d.seq_id == 11 && d.output_token_offset == 3);
+    assert(ring_consume(ring, &d) == 1);
+    assert(d.seq_id == 12 && d.output_token_offset == 4);
+    assert(ring_consume(ring, &d) == 1);
+    assert(d.seq_id == 13 && d.output_token_offset == 5);
+
+    ring_destroy(ring);
+    printf("OK\n");
+}
+
 int main(void)
 {
     printf("GB300 RL Runtime — CPU Smoke Tests\n\n");
@@ -215,6 +251,7 @@ int main(void)
     test_completion_ring_overflow();
     test_done_ring_overflow();
     test_pipeline_snapshot_and_batch();
+    test_decode_descriptor_batch_submit();
     printf("\nAll smoke tests passed.\n");
     return 0;
 }

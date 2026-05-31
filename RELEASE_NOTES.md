@@ -19,6 +19,9 @@ path, both inside the kernel and in the host control plane.
   every rollout immediately after enqueue
 - pipeline benchmarks now report or trace decode queue occupancy,
   credit headroom, and a suggested decode batch window
+- added host-side descriptor window helpers in `include/decode_batch.h`
+  and `src/decode_batch.c`, and wired runtime-style paths to submit
+  grouped descriptor windows with one ring commit per window
 
 Current limitation:
 
