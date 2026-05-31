@@ -1,5 +1,16 @@
 # Release Notes
 
+## Up Next: v0.2.2
+
+Planned next step:
+
+- add one real, fixed-shape decode math path
+- keep control-plane and math-path benchmarks separate
+- add hardware-shaped KV layout docs and benchmarks
+- add CUDA correctness tests against a tiny reference implementation
+
+See `docs/v0.2.2-roadmap.md` for the file-by-file breakdown.
+
 ## v0.2.1
 
 This release is a correctness and stabilization pass.  The goal is to

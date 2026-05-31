@@ -195,6 +195,7 @@ production inference stacks today.
 | `docs/metrics.md` | Target metrics and benchmark commands (all benchmarks) |
 | `docs/tracing.md` | Trace event types, latency pairs, example output |
 | `docs/gpu_scheduler.md` | GPU-resident rollout scheduler design and comparison |
+| `docs/v0.2.2-roadmap.md` | File-by-file plan for the first real hardware-close decode path |
 
 ## Build
 
