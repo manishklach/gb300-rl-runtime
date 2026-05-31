@@ -44,13 +44,23 @@ BENCH_PREFETCH_SRC := $(BENCHDIR)/bench_prefetch.cu
 BENCH_PREFETCH_TARGET := $(BLDDIR)/bench_prefetch
 
 BENCH_TARGETS := $(BENCH_TARGET) $(BENCH_TRACE_TARGET) $(BENCH_COW_TARGET) $(BENCH_TAX_TARGET) $(BENCH_GPU_SCHED_TARGET) $(BENCH_DECODE_TARGET) $(BENCH_KV_LAYOUT_TARGET) $(BENCH_PREFETCH_TARGET)
+CUDA_CHECK_DIR := $(BLDDIR)/cuda_check
+CUDA_CHECK_SRCS := $(MAIN_SRC) $(CU_SRCS) $(TESTDIR)/test_bench.cu \
+                   $(BENCHDIR)/bench_pipeline.cu $(BENCHDIR)/bench_trace_pipeline.cu \
+                   $(BENCHDIR)/bench_cow_prefix.cu $(BENCHDIR)/bench_gpu_scheduler.cu \
+                   $(BENCHDIR)/bench_decode_microkernel.cu $(BENCHDIR)/bench_kv_layout.cu \
+                   $(BENCHDIR)/bench_prefetch.cu
+CUDA_PTX_SRCS := $(CU_SRCS) $(BENCHDIR)/bench_decode_microkernel.cu $(BENCHDIR)/bench_prefetch.cu
 
-.PHONY: all clean smoke test bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-prefetch bench-all ci-build ci-run
+.PHONY: all clean smoke test bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-prefetch bench-all ci-build ci-run cuda-compile-check cuda-ptx-check
 
 all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(BENCH_TARGETS)
 
 $(BLDDIR):
 	mkdir -p $(BLDDIR)
+
+$(CUDA_CHECK_DIR):
+	mkdir -p $(CUDA_CHECK_DIR)
 
 $(BLDDIR)/%.o: $(SRCDIR)/%.c $(BLDDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -172,6 +182,22 @@ ci-build: $(SMOKE_TARGET) $(BENCH_TAX_TARGET) labs
 ci-run: smoke
 	./$(BENCH_TAX_TARGET) 100000
 	$(MAKE) lab-run-safe
+
+cuda-compile-check: $(CUDA_CHECK_DIR)
+	@for src in $(CUDA_CHECK_SRCS); do \
+		base=$$(basename $$src); \
+		out="$(CUDA_CHECK_DIR)/$${base%.*}.o"; \
+		echo "=== nvcc compile-check $$src ==="; \
+		$(NVCC) $(NVFLAGS) -c $$src -o $$out || exit $$?; \
+	done
+
+cuda-ptx-check: $(CUDA_CHECK_DIR)
+	@for src in $(CUDA_PTX_SRCS); do \
+		base=$$(basename $$src); \
+		out="$(CUDA_CHECK_DIR)/$${base%.*}.ptx"; \
+		echo "=== nvcc ptx-check $$src ==="; \
+		$(NVCC) $(NVFLAGS) -ptx $$src -o $$out || exit $$?; \
+	done
 
 lab-clean:
 	@for lab in $(LABS); do \

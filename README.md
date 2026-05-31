@@ -225,7 +225,14 @@ make bench-prefetch     # isolated global->shared staging microbenchmark
 make bench-all          # run all benchmarks
 make ci-build           # CPU-only build path used by GitHub Actions
 make ci-run             # CPU-only verification path used by GitHub Actions
+make cuda-compile-check # compile CUDA translation units with nvcc, no GPU execution
+make cuda-ptx-check     # emit PTX for core CUDA translation units, no GPU execution
 ```
+
+`cuda-compile-check` and `cuda-ptx-check` still require `nvcc`, but they
+do not require a running NVIDIA GPU. They are useful when you want syntax,
+template, host/device, and PTX-generation validation on a machine that has
+the CUDA toolkit installed but no accelerator attached.
 
 ## What Each Benchmark Proves
 

@@ -13,6 +13,9 @@
 - added `.github/workflows/ci.yml` plus `make ci-build` / `make ci-run`
   so the CPU control-plane path, smoke tests, and Linux-safe labs run
   in GitHub Actions without a GPU
+- added `make cuda-compile-check` and `make cuda-ptx-check` so machines
+  with the CUDA toolkit but no attached GPU can still validate `nvcc`
+  compilation and PTX emission
 - updated README and metrics docs to keep benchmark placeholders honest:
   the snapshot table is still a run-on-your-hardware template until
   real measured numbers are committed

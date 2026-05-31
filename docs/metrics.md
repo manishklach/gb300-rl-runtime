@@ -188,6 +188,15 @@ make bench-prefetch ARGS="8192"
 | `bench-gpu-scheduler` | GPU-managed rollout lifecycle — zero CPU per-token work |
 | `bench-prefetch` | Isolated KV staging bandwidth with and without `cp.async` |
 
+## GPU-Free CUDA Validation
+
+These are compile-only checks, not runtime benchmarks.
+
+| Target | What it validates |
+|--------|-------------------|
+| `make cuda-compile-check` | `nvcc` can compile the runtime, tests, and benchmark translation units to objects |
+| `make cuda-ptx-check` | `nvcc` can lower key CUDA translation units to PTX for inspection |
+
 ## How to Contribute a Benchmark
 
 1. Add a new `.cu` or `.c` file under `test/` or `lab/`.
