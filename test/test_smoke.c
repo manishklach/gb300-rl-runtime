@@ -231,10 +231,13 @@ static void test_decode_descriptor_batch_submit(void)
 
     assert(ring_consume(ring, &d) == 1);
     assert(d.seq_id == 11 && d.output_token_offset == 3);
+    assert(d.batch_size == 3 && d.batch_index == 0);
     assert(ring_consume(ring, &d) == 1);
     assert(d.seq_id == 12 && d.output_token_offset == 4);
+    assert(d.batch_size == 3 && d.batch_index == 1);
     assert(ring_consume(ring, &d) == 1);
     assert(d.seq_id == 13 && d.output_token_offset == 5);
+    assert(d.batch_size == 3 && d.batch_index == 2);
 
     ring_destroy(ring);
     printf("OK\n");

@@ -131,6 +131,8 @@ runtime_dispatch(Runtime *rt, uint64_t seq_id, int n_steps, int kv_blocks) {
       desc.pad               = 0;
       desc.output_token_offset = (uint32_t)i;
       desc.reward_cookie     = (uint64_t)seq_id << 32 | i;
+      desc.batch_size        = 0;
+      desc.batch_index       = 0;
       if (decode_batch_push(&batch, &desc) != 0)
         break;
       i++;

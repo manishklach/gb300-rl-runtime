@@ -184,6 +184,8 @@ static int dispatch_decode_window(BenchContext *ctx, uint32_t rollout_id,
         desc.pad               = 0;
         desc.output_token_offset = step;
         desc.reward_cookie     = (uint64_t)rollout_id << 32 | step;
+        desc.batch_size        = 0;
+        desc.batch_index       = 0;
         if (decode_batch_push(&batch, &desc) != 0)
             return -1;
     }

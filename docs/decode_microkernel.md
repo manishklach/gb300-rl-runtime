@@ -24,6 +24,9 @@ The implementation now has one mathematically real fixed path:
   assigning an entire row to one lane
 - the shared-memory prefetch layer now uses lane-striped 16-byte
   `cp.async` helpers rather than a fake whole-block inline-assembly copy
+- grouped host descriptor windows now become an explicit device-visible
+  batch contract through `batch_size` and `batch_index` fields on each
+  descriptor
 - the decode benchmark exercises explicit query and output buffers
 - the CUDA test suite compares the kernel output against a host reference
 

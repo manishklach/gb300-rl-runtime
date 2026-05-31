@@ -102,6 +102,15 @@ baseline.
   scheduling structure, not yet a full GPU-visible batch contract
 - broader reward/model semantics remain partial or stubbed
 
+### Follow-On Low-Level Work
+
+- refined the `cp.async` prefetch path so it now uses lane-striped
+  16-byte copy helpers with explicit commit/wait flow instead of the old
+  oversized placeholder inline assembly
+- added a device-visible decode batch contract by stamping
+  `batch_size` and `batch_index` onto grouped descriptors at submission
+  time and consuming that metadata inside the worker
+
 ### Verification Notes
 
 - `make smoke` passes on the supported CPU-only path

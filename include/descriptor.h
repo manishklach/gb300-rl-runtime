@@ -15,7 +15,9 @@ typedef struct {
   uint8_t   pad;
   uint32_t  output_token_offset; /* slot in completion ring */
   uint64_t  reward_cookie;       /* async reward completion tag */
+  uint16_t  batch_size;          /* grouped host submission window size */
+  uint16_t  batch_index;         /* ordinal within the grouped window */
 } Descriptor;
 #pragma pack(pop)
 
-_Static_assert(sizeof(Descriptor) == 28, "Descriptor must be 28 bytes");
+_Static_assert(sizeof(Descriptor) == 32, "Descriptor must be 32 bytes");

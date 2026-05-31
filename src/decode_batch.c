@@ -30,9 +30,22 @@ decode_batch_submit(CommandRing *ring, const DecodeDispatchBatch *batch)
     if (pos == UINT32_MAX)
         return -1;
 
-    for (i = 0; i < batch->count; i++)
-        ring->slots[(pos + i) & (RING_SIZE - 1U)] = batch->descs[i];
+    for (i = 0; i < batch->count; i++) {
+        Descriptor desc = batch->descs[i];
+        desc.batch_size = (uint16_t)batch->count;
+        desc.batch_index = (uint16_t)i;
+        ring->slots[(pos + i) & (RING_SIZE - 1U)] = desc;
+    }
 
     ring_commit(ring, batch->count);
     return 0;
+}
+
+DecodeBatchContract
+decode_batch_contract(const Descriptor *desc)
+{
+    DecodeBatchContract contract;
+    contract.batch_size = desc ? desc->batch_size : 0U;
+    contract.batch_index = desc ? desc->batch_index : 0U;
+    return contract;
 }

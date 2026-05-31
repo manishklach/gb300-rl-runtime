@@ -1,6 +1,7 @@
 #include "ring.h"
 #include "arena.h"
 #include "completion.h"
+#include "decode_batch.h"
 #include "attention_decode.h"
 #include "prefetch.h"
 #include "sample.h"
@@ -28,8 +29,10 @@ process_descriptor(const Descriptor *desc, KVArena *arena,
                    uint8_t *smem_buf) {
   uint8_t *kv_src = arena_block_ptr(arena, desc->kv_block_offset);
   PrefetchPipelineState pf_state;
+  DecodeBatchContract batch = decode_batch_contract(desc);
   uint32_t lane = threadIdx.x & 31;
   uint32_t slot = io_slots == 0 ? 0U : (desc->output_token_offset & (io_slots - 1U));
+  uint32_t batch_remaining = 1U;
   DecodeStepArgs args;
   args.q_ptr = q_buffer ? (const void *)(q_buffer + slot * DECODE_FIXED_HEAD_DIM) : NULL;
   args.o_ptr = o_buffer ? (void *)(o_buffer + slot * DECODE_FIXED_HEAD_DIM) : NULL;
@@ -38,7 +41,11 @@ process_descriptor(const Descriptor *desc, KVArena *arena,
   args.kv_block_base_idx = desc->kv_block_offset;
   args.kv_block_count = 1;
   args.output_token_offset = slot;
-  prefetch_pipeline_init(&pf_state, smem_buf, PREFETCH_DEPTH, KV_BLOCK_SIZE);
+  if (batch.batch_size > batch.batch_index)
+    batch_remaining = (uint32_t)(batch.batch_size - batch.batch_index);
+  if (batch_remaining > PREFETCH_DEPTH)
+    batch_remaining = PREFETCH_DEPTH;
+  prefetch_pipeline_init(&pf_state, smem_buf, batch_remaining, KV_BLOCK_SIZE);
   DecodeStepResult result =
       attention_decode_step_fixed128(desc, &args, kv_src, sample_st,
                                      prefetch_pipeline_stage_ptr(&pf_state, 0));
@@ -100,6 +107,8 @@ decode_worker(CommandRing   *ring,
       desc.pad               = (uint8_t)warp_broadcast_u32(desc.pad, 0);
       desc.output_token_offset = warp_broadcast_u32(desc.output_token_offset, 0);
       desc.reward_cookie     = warp_broadcast_u64(desc.reward_cookie, 0);
+      desc.batch_size        = (uint16_t)warp_broadcast_u32(desc.batch_size, 0);
+      desc.batch_index       = (uint16_t)warp_broadcast_u32(desc.batch_index, 0);
     }
 #endif
 
