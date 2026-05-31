@@ -99,7 +99,7 @@ test: smoke $(TEST_TARGET)
 	./$(TEST_TARGET)
 
 bench: $(TEST_TARGET)
-	./$(TEST_TARGET) --bench --tokens 1000000
+	./$(TEST_TARGET) --bench 1000000
 
 bench-pipeline: $(BENCH_TARGET)
 	./$(BENCH_TARGET)

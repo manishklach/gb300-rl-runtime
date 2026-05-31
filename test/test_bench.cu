@@ -20,6 +20,7 @@
 #include "kv_prefix.h"
 #include "request.h"
 #include "attention_decode.h"
+#include "query_producer.h"
 #include "warp_broadcast.cuh"
 #include <time.h>
 #include <stdio.h>
@@ -33,15 +34,6 @@
 __global__ void decode_worker(CommandRing*, KVArena*, CompletionRing*,
                               SampleState*, const __half*, float*, uint32_t,
                               uint64_t*);
-
-static void
-fill_runtime_query_slot(__half *dst, uint32_t step) {
-  for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++) {
-    const float v =
-        (float)(((int)((step + 1U) * (d + 9U)) % 41) - 20) / 16.0f;
-    dst[d] = __float2half_rn(v);
-  }
-}
 
 static int
 cuda_is_available(void) {
@@ -374,8 +366,11 @@ bench_full_pipeline(int n_tokens) {
 
   SampleState *d_sample_st;
   cudaMalloc(&d_sample_st, sizeof(SampleState));
+  float *d_hidden_buf = NULL;
+  __half *d_query_proj = NULL;
   __half *d_query_buf;
   float *d_output_buf;
+  assert(query_producer_init(&d_hidden_buf, &d_query_proj, RING_SIZE) == 0);
   cudaMalloc(&d_query_buf, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(__half));
   cudaMalloc(&d_output_buf, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(float));
   cudaMemset(d_output_buf, 0, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(float));
@@ -410,7 +405,6 @@ bench_full_pipeline(int n_tokens) {
   cudaEventRecord(start);
 
   for (int i = 0; i < n_tokens; i++) {
-    __half q_host[DECODE_FIXED_HEAD_DIM];
     uint32_t pos = ring_acquire(cmd_ring, 1);
     if (pos == UINT32_MAX) {
       /* drain some completions */
@@ -419,9 +413,9 @@ bench_full_pipeline(int n_tokens) {
       pos = ring_acquire(cmd_ring, 1);
       assert(pos != UINT32_MAX);
     }
-    fill_runtime_query_slot(q_host, (uint32_t)i);
-    cudaMemcpy(d_query_buf + (((uint32_t)i & (RING_SIZE - 1U)) * DECODE_FIXED_HEAD_DIM),
-               q_host, sizeof(q_host), cudaMemcpyHostToDevice);
+    assert(query_producer_prepare_slot(d_hidden_buf, d_query_buf, d_query_proj,
+                                       RING_SIZE, 1, (uint32_t)i,
+                                       ((uint32_t)i & (RING_SIZE - 1U))) == 0);
     Descriptor desc;
     desc.seq_id            = 1;
     desc.kv_block_offset   = (uint32_t)(i % 128);
@@ -470,6 +464,7 @@ bench_full_pipeline(int n_tokens) {
 
   cudaFree(d_step_count);
   cudaFree(d_sample_st);
+  query_producer_destroy(d_hidden_buf, d_query_proj);
   cudaFree(d_query_buf);
   cudaFree(d_output_buf);
   ring_destroy(cmd_ring);

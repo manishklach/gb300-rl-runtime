@@ -167,7 +167,7 @@ story is best described as "modern NVIDIA GPUs on Linux" rather than
 | Hot-path guards | **Partial** | Counts explicit wrapper calls; useful for regressions, not a whole-process proof |
 | Tracing | **Real** | 1M-entry ring buffer, pair-latency matching, p50/p90/p99 |
 | Request/Done rings (v0.3) | **Real** | Host+device atomics, GPU resident slot management |
-| Fixed128 decode path | **Partial** | Real QK / softmax / V math for one fixed-shape path; runtime now plumbs explicit query/output buffers but still fills them with synthetic host-side data |
+| Fixed128 decode path | **Partial** | Real QK / softmax / V math for one fixed-shape path; runtime now routes descriptors through an explicit synthetic query-producer stage and explicit output buffers |
 | KV layout descriptor | **Scaffold** | Concrete fixed128 KV block math, alignment invariants, and offset helpers |
 | Attention decoder | **Partial** | Fixed128 real path exists; broader runtime/model coverage is still incomplete |
 | Reward model | **Stub** | `reward_score_mock()` returns `(n & 0xFF) / 255.0f` — no real scoring |

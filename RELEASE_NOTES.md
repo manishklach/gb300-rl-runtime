@@ -1,5 +1,26 @@
 # Release Notes
 
+## v0.2.2-c
+
+This checkpoint removes the last direct host-filled query staging from
+the runtime-shaped path and replaces it with a tiny explicit query
+producer stage.
+
+- added `include/query_producer.h` and `cu/query_producer.cu`
+- runtime, pipeline benchmarks, and CUDA pipeline tests now prepare
+  decode query slots through resident hidden-state and projection buffers
+  on the device side instead of host-side direct query fills
+- kept the new stage documented as synthetic scaffolding rather than a
+  full model forward pass
+
+Current limitation:
+
+- query production is now an explicit runtime stage, but it is still a
+  deterministic synthetic hidden-state plus projection scaffold rather
+  than real transformer activations
+- the real decode path is still intentionally narrow: one fixed head
+  dimension, one staged KV block, one correctness-first execution path
+
 ## v0.2.2-b
 
 This checkpoint upgrades the fixed128 decode path from a pure scaffold to
@@ -15,7 +36,7 @@ one mathematically real kernel path for a narrow configuration.
 Current limitation:
 
 - the runtime path now carries explicit query/output buffers, but it
-  still populates them with synthetic host-side data instead of model
+  still depends on synthetic query values rather than real model
   activations
 - the real path is still intentionally narrow: one fixed head dimension,
   one staged KV block, one lane-0 style correctness-first implementation

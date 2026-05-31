@@ -23,8 +23,9 @@ The implementation now has one mathematically real fixed path:
 
 What is still limited:
 
-- the runtime path now carries explicit query/output buffers, but it
-  still fills them with synthetic host-side data instead of model-owned
+- the runtime path now carries explicit query/output buffers and an
+  explicit query-producer stage, but that producer still synthesizes
+  hidden state and projection weights instead of consuming model-owned
   activations
 - only one fixed shape is supported
 - only one staged KV block is handled in the current real path
@@ -59,7 +60,7 @@ The next decode-focused steps should broaden the real path in
 `cu/attention_decode.cu`:
 
 1. multiple KV blocks per decode step
-2. explicit descriptor/query/output plumbing in the runtime path
+2. replace the synthetic query producer with real model-state plumbing
 3. more parallelism than the current lane-0 reference-style execution
 4. clearer split between correctness kernel and tuned kernel
 The current benchmark is already the first real math-path benchmark; the
