@@ -5,8 +5,7 @@
 typedef struct {
     float q_vec[DECODE_FIXED_HEAD_DIM];
     float out_vec[DECODE_FIXED_HEAD_DIM];
-    float scores[KV_LAYOUT_TOKENS_PER_BLOCK];
-    float probs[KV_LAYOUT_TOKENS_PER_BLOCK];
+    float tile_scores[DECODE_TILE_TOKENS];
     float best_vals[32];
     uint32_t best_idx[32];
 } DecodeWarpScratch;
@@ -70,11 +69,8 @@ attention_decode_step_fixed128(const Descriptor *desc,
 
     decode_load_query(scratch.q_vec, desc, args, sample_st);
     __sync_warp();
-    if (lane == 0)
-        prefetch_issue(kv_block_base, smem_buf);
-    __sync_warp();
-    if (lane == 0)
-        prefetch_wait();
+    prefetch_issue(kv_block_base, smem_buf);
+    prefetch_wait();
     __sync_warp();
 
     uint32_t seq_len = (args && args->seq_len != 0U) ? args->seq_len : 1U;
@@ -87,51 +83,81 @@ attention_decode_step_fixed128(const Descriptor *desc,
 
     const uint32_t group = lane / DECODE_QK_GROUP_SIZE;
     const uint32_t lane_in_group = lane % DECODE_QK_GROUP_SIZE;
-    for (uint32_t base_t = 0; base_t < seq_len; base_t += DECODE_QK_ROWS_PER_WARP) {
-        const uint32_t t = base_t + group;
-        float partial = 0.0f;
-        if (t < seq_len) {
-            const __half *k_row = k_block + t * DECODE_FIXED_HEAD_DIM;
-            for (uint32_t d = lane_in_group; d < DECODE_FIXED_HEAD_DIM; d += DECODE_QK_GROUP_SIZE)
-                partial += scratch.q_vec[d] * __half2float(k_row[d]);
+    float running_max = -CUDART_INF_F;
+    float running_norm = 0.0f;
+
+    for (uint32_t d = lane; d < DECODE_FIXED_HEAD_DIM; d += 32U)
+        scratch.out_vec[d] = 0.0f;
+    __sync_warp();
+
+    for (uint32_t tile_base = 0; tile_base < seq_len; tile_base += DECODE_TILE_TOKENS) {
+        const uint32_t tile_count =
+            (seq_len - tile_base) < DECODE_TILE_TOKENS ? (seq_len - tile_base) : DECODE_TILE_TOKENS;
+
+        for (uint32_t local_base = 0; local_base < tile_count; local_base += DECODE_QK_ROWS_PER_WARP) {
+            const uint32_t local_t = local_base + group;
+            const uint32_t t = tile_base + local_t;
+            float partial = 0.0f;
+            if (local_t < tile_count) {
+                const __half *k_row = k_block + t * DECODE_FIXED_HEAD_DIM;
+                for (uint32_t d = lane_in_group; d < DECODE_FIXED_HEAD_DIM; d += DECODE_QK_GROUP_SIZE)
+                    partial += scratch.q_vec[d] * __half2float(k_row[d]);
+            }
+
+            for (uint32_t offset = DECODE_QK_GROUP_SIZE / 2U; offset > 0; offset >>= 1)
+                partial += __shfl_down_sync(0xFFFFFFFFU, partial, offset, DECODE_QK_GROUP_SIZE);
+
+            if (lane_in_group == 0U && local_t < tile_count)
+                scratch.tile_scores[local_t] = partial * scale;
         }
+        __sync_warp();
 
-        for (uint32_t offset = DECODE_QK_GROUP_SIZE / 2U; offset > 0; offset >>= 1)
-            partial += __shfl_down_sync(0xFFFFFFFFU, partial, offset, DECODE_QK_GROUP_SIZE);
+        float tile_max = running_max;
+        float scale_old = 0.0f;
+        float new_norm = running_norm;
+        if (lane == 0) {
+            tile_max = scratch.tile_scores[0];
+            for (uint32_t t = 1; t < tile_count; t++)
+                tile_max = fmaxf(tile_max, scratch.tile_scores[t]);
 
-        if (lane_in_group == 0U && t < seq_len)
-            scratch.scores[t] = partial * scale;
+            const float new_max = fmaxf(running_max, tile_max);
+            scale_old = (running_norm == 0.0f) ? 0.0f : expf(running_max - new_max);
+
+            float tile_norm = 0.0f;
+            for (uint32_t t = 0; t < tile_count; t++)
+                tile_norm += expf(scratch.tile_scores[t] - new_max);
+
+            scratch.best_vals[0] = new_max;
+            scratch.best_vals[1] = scale_old;
+            scratch.best_vals[2] = running_norm * scale_old + tile_norm;
+        }
+        __sync_warp();
+
+        const float new_max = __shfl_sync(0xFFFFFFFFU, scratch.best_vals[0], 0);
+        scale_old = __shfl_sync(0xFFFFFFFFU, scratch.best_vals[1], 0);
+        new_norm = __shfl_sync(0xFFFFFFFFU, scratch.best_vals[2], 0);
+
+        for (uint32_t d = lane; d < DECODE_FIXED_HEAD_DIM; d += 32U) {
+            float acc = scratch.out_vec[d] * scale_old;
+            for (uint32_t local_t = 0; local_t < tile_count; local_t++) {
+                const uint32_t t = tile_base + local_t;
+                const float weight = expf(scratch.tile_scores[local_t] - new_max);
+                const __half *v_row = v_block + t * DECODE_FIXED_HEAD_DIM;
+                acc += weight * __half2float(v_row[d]);
+            }
+            scratch.out_vec[d] = acc;
+        }
+        __sync_warp();
+
+        running_max = new_max;
+        running_norm = new_norm;
     }
-    __sync_warp();
 
-    float lane_score = lane < seq_len ? scratch.scores[lane] : -CUDART_INF_F;
-    float max_score = lane_score;
-    for (int offset = 16; offset > 0; offset >>= 1)
-        max_score = fmaxf(max_score, __shfl_down_sync(0xFFFFFFFFU, max_score, offset));
-    max_score = __shfl_sync(0xFFFFFFFFU, max_score, 0);
-
-    float lane_prob = 0.0f;
-    if (lane < seq_len) {
-        lane_prob = expf(scratch.scores[lane] - max_score);
-        scratch.probs[lane] = lane_prob;
-    }
-    __sync_warp();
-
-    float denom = lane_prob;
-    for (int offset = 16; offset > 0; offset >>= 1)
-        denom += __shfl_down_sync(0xFFFFFFFFU, denom, offset);
-    denom = __shfl_sync(0xFFFFFFFFU, denom, 0);
-    if (denom == 0.0f)
-        denom = 1.0f;
+    if (running_norm == 0.0f)
+        running_norm = 1.0f;
 
     for (uint32_t d = lane; d < DECODE_FIXED_HEAD_DIM; d += 32U) {
-        float acc = 0.0f;
-        for (uint32_t t = 0; t < seq_len; t++) {
-            const float p = scratch.probs[t] / denom;
-            const __half *v_row = v_block + t * DECODE_FIXED_HEAD_DIM;
-            acc += p * __half2float(v_row[d]);
-        }
-        scratch.out_vec[d] = acc;
+        scratch.out_vec[d] /= running_norm;
     }
     __sync_warp();
 
@@ -171,7 +197,8 @@ attention_decode_step_fixed128(const Descriptor *desc,
     result.path_kind = DECODE_PATH_FIXED128;
     result.bytes_touched = seq_len * DECODE_FIXED_HEAD_DIM * KV_LAYOUT_SCALAR_BYTES * 2U;
     result.tile_count = (seq_len + DECODE_TILE_TOKENS - 1U) / DECODE_TILE_TOKENS;
-    result.cycle_estimate = (uint64_t)seq_len * DECODE_FIXED_HEAD_DIM * 2ULL;
+    result.cycle_estimate = (uint64_t)result.tile_count *
+                            (uint64_t)DECODE_FIXED_HEAD_DIM * 24ULL;
     result.token_id = token_id;
     return result;
 }

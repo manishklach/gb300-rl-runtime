@@ -22,6 +22,12 @@ The implementation now has one mathematically real fixed path:
   lane-0 driven
 - the QK score pass now uses 8-lane groups per token row rather than
   assigning an entire row to one lane
+- KV staging now has all 32 lanes participate in the `cp.async` copy
+  path instead of incorrectly routing the lane-striped copy helper
+  through lane 0 only
+- the softmax/output path now uses tiled online accumulation, so the
+  kernel no longer materializes a full probability buffer before V
+  accumulation
 - the shared-memory prefetch layer now uses lane-striped 16-byte
   `cp.async` helpers rather than a fake whole-block inline-assembly copy
 - grouped host descriptor windows now become an explicit device-visible

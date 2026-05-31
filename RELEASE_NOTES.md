@@ -1,5 +1,17 @@
 # Release Notes
 
+## Unreleased
+
+### Decode Optimization Pass
+
+- fixed the fixed128 decode path so the lane-striped prefetch helper is
+  now executed by the whole warp rather than lane 0 only
+- replaced the old score-buffer plus probability-buffer flow with a
+  tiled online softmax accumulation path that rescales prior partial
+  output and fuses normalization with V accumulation
+- updated decode docs to reflect the more hardware-shaped fixed128 path
+- verified the CPU smoke suite still passes after the kernel-side change
+
 ## v0.3.2
 
 This release focuses on benchmark readiness, CPU-only verification, and

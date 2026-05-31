@@ -167,7 +167,7 @@ story is best described as "modern NVIDIA GPUs on Linux" rather than
 | Hot-path guards | **Partial** | Counts explicit wrapper calls; useful for regressions, not a whole-process proof |
 | Tracing | **Real** | 1M-entry ring buffer, pair-latency matching, p50/p90/p99 |
 | Request/Done rings (v0.3) | **Real** | Host+device atomics, GPU resident slot management |
-| Fixed128 decode path | **Partial** | Real QK / softmax / V math for one fixed-shape path; the decode kernel is now warp-cooperative for score, softmax, and output accumulation, and the runtime routes descriptors through a tiny weighted model-state block plus query projection |
+| Fixed128 decode path | **Partial** | Real QK / softmax / V math for one fixed-shape path; the decode kernel now stages KV with all-lane `cp.async` participation and uses tiled online softmax accumulation to fuse score normalization with V accumulation, while the runtime routes descriptors through a tiny weighted model-state block plus query projection |
 | Pipeline windows | **Real** | Snapshot helpers expose queue occupancy, stage credit headroom, and suggested batch windows for decode/reward/trajectory stages; pipeline benches now use them to gate batched decode admission |
 | Descriptor windows | **Real** | Host-side decode batch helpers prepare and submit grouped descriptor windows with one ring commit instead of one commit per step |
 | Device-visible batch contract | **Partial** | Grouped descriptor windows now stamp explicit batch size and batch index onto each descriptor, and the worker uses that metadata to shape local prefetch state |
