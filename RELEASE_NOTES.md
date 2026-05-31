@@ -1,5 +1,116 @@
 # Release Notes
 
+## v0.3.1
+
+This release consolidates the post-`v0.3.0` correctness, decode, and
+pipeline work into a more honest and more hardware-shaped runtime
+baseline.
+
+### Highlights
+
+- corrected and hardened the SPSC queue semantics used by the runtime
+  control path
+- made shutdown safer by synchronizing persistent-worker exit before
+  cleanup
+- added overflow detection and backpressure for completion and done
+  rings
+- upgraded the fixed128 decode path from scaffold to real QK / softmax /
+  V math
+- split the pre-decode path into explicit `model_state` and
+  `query_producer` stages
+- made the decode kernel warp-cooperative instead of mostly lane-0
+  driven
+- added decode queue snapshots, batch-window helpers, batch-driven
+  decode admission, and grouped descriptor window submission
+- added a GitHub Pages site under `docs/index.html`
+
+### Correctness and Stability
+
+- fixed command-ring accounting so producer free-space checks observe the
+  consumer-owned head and consumer availability checks observe the
+  producer-owned tail
+- fixed warp broadcast handling in the worker path to use
+  `__shfl_sync`-style value broadcast rather than treating
+  `__sync_warp` as a value-producing primitive
+- ensured runtime and benchmark shutdown paths wait for persistent CUDA
+  workers to exit before freeing host or device resources
+- added overflow counting to completion and done rings so slow
+  consumers are visible instead of silently overwritten
+- expanded CPU smoke coverage to include:
+  - empty/full ring behavior
+  - wraparound
+  - producer observing consumer progress
+  - no permanent-full condition
+  - completion and done ring overflow
+  - pipeline snapshot and batch-window helpers
+  - grouped descriptor window submission
+- corrected the stale `rollout_t` size assertion when the rollout and
+  pipeline code was pulled into the smoke target
+
+### Decode Path and Hardware-Close Runtime Work
+
+- added a fixed-shape KV layout and the first real decode microkernel
+  path
+- upgraded the decode microkernel from metadata scaffold to real
+  single-token attention math for one fixed configuration
+- added explicit device-side query and output buffer plumbing to the
+  runtime-style path
+- introduced `model_state` and `query_producer` modules so the path is
+  now:
+  `descriptor -> model_state -> query_producer -> decode`
+- upgraded the synthetic model-state stage from a simple scalar mix to a
+  tiny residual-style weighted block
+- made the fixed128 decode kernel warp-cooperative for query load,
+  score generation, softmax normalization, output accumulation, and
+  argmax selection
+- deepened the QK score pass further by using 8-lane groups per token
+  row
+- added explicit prefetch pipeline helper state and stage helpers so
+  worker-side prefetch code is less ad hoc
+
+### Pipeline and Scheduling Work
+
+- added `PipelineSnapshot` so queue occupancy and stage credit headroom
+  can be inspected explicitly
+- added decode batch-window helpers to estimate how much decode work can
+  be admitted safely
+- updated pipeline benchmarks so decode admission is credit-gated and
+  drained in batches rather than immediately dispatching each rollout
+- added grouped host-side descriptor window submission so multiple
+  decode steps can be published with one ring commit
+- added metrics and tracing for decode batches, scheduled rollout count,
+  and batch peak size
+
+### Documentation and Repo UX
+
+- tightened README and release-note wording to distinguish real,
+  partial, and scaffolded components more honestly
+- documented decode-path status in `docs/decode_microkernel.md`
+- added a detailed static project page in `docs/index.html`
+- enabled the repository for GitHub Pages publishing from `master/docs`
+
+### Current Limitations
+
+- the decode path is still intentionally narrow:
+  - one fixed head dimension
+  - one warp
+  - one staged KV block
+  - one correctness-first kernel shape
+- model-state and query production are still deterministic scaffolding,
+  not trained model activations
+- the new batch-window and descriptor-window helpers are host-side
+  scheduling structure, not yet a full GPU-visible batch contract
+- broader reward/model semantics remain partial or stubbed
+
+### Verification Notes
+
+- `make smoke` passes on the supported CPU-only path
+- CUDA compile/runtime verification is still environment-dependent and
+  requires `nvcc` plus a CUDA-capable device
+- benchmark claims remain focused on control-path behavior and the
+  specific fixed decode path rather than broad model-serving
+  performance
+
 ## v0.2.2-f
 
 This checkpoint adds another layer of pipelining work around the decode
