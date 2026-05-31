@@ -202,6 +202,7 @@ production inference stacks today.
 | `docs/tracing.md` | Trace event types, latency pairs, example output |
 | `docs/gpu_scheduler.md` | GPU-resident rollout scheduler design and comparison |
 | `docs/decode_microkernel.md` | Status and intent of the fixed-shape decode microkernel scaffold |
+| `docs/part3-metal-blog.md` | Deep dive on PTX, `cp.async`, memory ordering, host flush semantics, and the v0.4 roadmap |
 | `docs/v0.2.2-roadmap.md` | File-by-file plan for the first real hardware-close decode path |
 
 ## Build
