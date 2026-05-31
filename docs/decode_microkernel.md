@@ -18,6 +18,8 @@ The implementation now has one mathematically real fixed path:
 
 - shared-memory staging is real
 - fixed128 decode executes real QK / softmax / V accumulation math
+- the fixed128 kernel is now warp-cooperative instead of almost entirely
+  lane-0 driven
 - the decode benchmark exercises explicit query and output buffers
 - the CUDA test suite compares the kernel output against a host reference
 
@@ -32,6 +34,8 @@ What is still limited:
   scaffolding rather than trained parameters
 - only one fixed shape is supported
 - only one staged KV block is handled in the current real path
+- the score pass still maps one lane to one token row, so further kernel
+  parallelization work is still ahead
 
 ## Fixed Path
 
@@ -64,7 +68,7 @@ The next decode-focused steps should broaden the real path in
 
 1. multiple KV blocks per decode step
 2. replace the synthetic model-state update with real model activations
-3. more parallelism than the current lane-0 reference-style execution
+3. deeper kernel parallelism than the current single-warp cooperative execution
 4. clearer split between correctness kernel and tuned kernel
 The current benchmark is already the first real math-path benchmark; the
 remaining work is about expanding and tuning it.

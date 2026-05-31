@@ -69,17 +69,17 @@ test_decode_fixed128_kernel(float *out_vec,
                             Descriptor desc,
                             uint32_t seq_len) {
   extern __shared__ uint8_t smem[];
-  if (threadIdx.x == 0) {
-    DecodeStepArgs args;
-    args.q_ptr = q_vec;
-    args.o_ptr = out_vec;
-    args.seq_len = seq_len;
-    args.head_dim = DECODE_FIXED_HEAD_DIM;
-    args.kv_block_base_idx = desc.kv_block_offset;
-    args.kv_block_count = 1;
-    args.output_token_offset = desc.output_token_offset;
-    DecodeStepResult result =
-        attention_decode_step_fixed128(&desc, &args, kv_block, sample_st, smem);
+  DecodeStepArgs args;
+  args.q_ptr = q_vec;
+  args.o_ptr = out_vec;
+  args.seq_len = seq_len;
+  args.head_dim = DECODE_FIXED_HEAD_DIM;
+  args.kv_block_base_idx = desc.kv_block_offset;
+  args.kv_block_count = 1;
+  args.output_token_offset = desc.output_token_offset;
+  DecodeStepResult result =
+      attention_decode_step_fixed128(&desc, &args, kv_block, sample_st, smem);
+  if ((threadIdx.x & 31) == 0) {
     token_out[0] = result.token_id;
     bytes_out[0] = result.bytes_touched;
     tiles_out[0] = result.tile_count;
@@ -692,7 +692,7 @@ test_decode_fixed128_reference(void) {
   assert(gpu_token == ref_token);
   assert(gpu_bytes == seq_len * DECODE_FIXED_HEAD_DIM * KV_LAYOUT_SCALAR_BYTES * 2U);
   assert(gpu_tiles == (seq_len + DECODE_TILE_TOKENS - 1U) / DECODE_TILE_TOKENS);
-  assert(gpu_cycles == (uint64_t)seq_len * DECODE_FIXED_HEAD_DIM * 4ULL);
+  assert(gpu_cycles == (uint64_t)seq_len * DECODE_FIXED_HEAD_DIM * 2ULL);
 
   cudaFree(d_q);
   cudaFree(d_kv);

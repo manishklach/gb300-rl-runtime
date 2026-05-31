@@ -1,5 +1,26 @@
 # Release Notes
 
+## v0.2.2-e
+
+This checkpoint makes the fixed128 decode kernel less reference-style
+and more hardware-shaped by turning the inner attention math into a
+warp-cooperative path.
+
+- `cu/attention_decode.cu` now spreads work across the warp instead of
+  leaving almost all math on lane 0
+- score generation, softmax normalization, and output-vector
+  accumulation now execute cooperatively across lanes
+- `bench/bench_decode_microkernel.cu` and the CUDA correctness test were
+  updated to exercise the warp-cooperative path directly
+
+Current limitation:
+
+- the decode path is still one warp, one KV block, one fixed head
+  dimension, and one correctness-first layout
+- the score pass still assigns one lane per token row, so this is a
+  meaningful step toward hardware-shaped execution, not a fully tuned
+  kernel
+
 ## v0.2.2-d
 
 This checkpoint separates synthetic activation preparation from query

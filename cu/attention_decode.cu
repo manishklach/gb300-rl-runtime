@@ -2,6 +2,15 @@
 #include "prefetch.h"
 #include <math.h>
 
+typedef struct {
+    float q_vec[DECODE_FIXED_HEAD_DIM];
+    float out_vec[DECODE_FIXED_HEAD_DIM];
+    float scores[KV_LAYOUT_TOKENS_PER_BLOCK];
+    float probs[KV_LAYOUT_TOKENS_PER_BLOCK];
+    float best_vals[32];
+    uint32_t best_idx[32];
+} DecodeWarpScratch;
+
 __device__ static float
 decode_synth_query_component(const Descriptor *desc,
                              const SampleState *sample_st,
@@ -22,14 +31,15 @@ decode_load_query(float *q_vec,
                   const DecodeStepArgs *args,
                   const SampleState *sample_st)
 {
+    const uint32_t lane = threadIdx.x & 31U;
     if (args && args->q_ptr) {
         const __half *q_half = (const __half *)args->q_ptr;
-        for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++)
+        for (uint32_t d = lane; d < DECODE_FIXED_HEAD_DIM; d += 32U)
             q_vec[d] = __half2float(q_half[d]);
         return;
     }
 
-    for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++)
+    for (uint32_t d = lane; d < DECODE_FIXED_HEAD_DIM; d += 32U)
         q_vec[d] = decode_synth_query_component(desc, sample_st, d);
 }
 
@@ -52,12 +62,11 @@ attention_decode_step_fixed128(const Descriptor *desc,
                                SampleState *sample_st,
                                uint8_t *smem_buf)
 {
-    float q_vec[DECODE_FIXED_HEAD_DIM];
-    float out_vec[DECODE_FIXED_HEAD_DIM];
-    float scores[KV_LAYOUT_TOKENS_PER_BLOCK];
-    float probs[KV_LAYOUT_TOKENS_PER_BLOCK];
+    const uint32_t lane = threadIdx.x & 31U;
+    __shared__ DecodeWarpScratch scratch;
 
-    decode_load_query(q_vec, desc, args, sample_st);
+    decode_load_query(scratch.q_vec, desc, args, sample_st);
+    __sync_warp();
     prefetch_issue(kv_block_base, smem_buf);
     prefetch_wait();
 
@@ -69,55 +78,84 @@ attention_decode_step_fixed128(const Descriptor *desc,
     const __half *v_block = (const __half *)(smem_buf + kv_layout_v_plane_base_bytes());
     const float scale = rsqrtf((float)DECODE_FIXED_HEAD_DIM);
 
-    float max_score = -CUDART_INF_F;
-    for (uint32_t t = 0; t < seq_len; t++) {
+    float lane_score = -CUDART_INF_F;
+    if (lane < seq_len) {
         float dot = 0.0f;
-        const __half *k_row = k_block + t * DECODE_FIXED_HEAD_DIM;
+        const __half *k_row = k_block + lane * DECODE_FIXED_HEAD_DIM;
         for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++)
-            dot += q_vec[d] * __half2float(k_row[d]);
-        scores[t] = dot * scale;
-        if (scores[t] > max_score)
-            max_score = scores[t];
+            dot += scratch.q_vec[d] * __half2float(k_row[d]);
+        lane_score = dot * scale;
+        scratch.scores[lane] = lane_score;
     }
+    __sync_warp();
 
-    float denom = 0.0f;
-    for (uint32_t t = 0; t < seq_len; t++) {
-        probs[t] = expf(scores[t] - max_score);
-        denom += probs[t];
+    float max_score = lane_score;
+    for (int offset = 16; offset > 0; offset >>= 1)
+        max_score = fmaxf(max_score, __shfl_down_sync(0xFFFFFFFFU, max_score, offset));
+    max_score = __shfl_sync(0xFFFFFFFFU, max_score, 0);
+
+    float lane_prob = 0.0f;
+    if (lane < seq_len) {
+        lane_prob = expf(scratch.scores[lane] - max_score);
+        scratch.probs[lane] = lane_prob;
     }
+    __sync_warp();
+
+    float denom = lane_prob;
+    for (int offset = 16; offset > 0; offset >>= 1)
+        denom += __shfl_down_sync(0xFFFFFFFFU, denom, offset);
+    denom = __shfl_sync(0xFFFFFFFFU, denom, 0);
     if (denom == 0.0f)
         denom = 1.0f;
 
-    for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++)
-        out_vec[d] = 0.0f;
-
-    for (uint32_t t = 0; t < seq_len; t++) {
-        const float p = probs[t] / denom;
-        const __half *v_row = v_block + t * DECODE_FIXED_HEAD_DIM;
-        for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++)
-            out_vec[d] += p * __half2float(v_row[d]);
+    for (uint32_t d = lane; d < DECODE_FIXED_HEAD_DIM; d += 32U) {
+        float acc = 0.0f;
+        for (uint32_t t = 0; t < seq_len; t++) {
+            const float p = scratch.probs[t] / denom;
+            const __half *v_row = v_block + t * DECODE_FIXED_HEAD_DIM;
+            acc += p * __half2float(v_row[d]);
+        }
+        scratch.out_vec[d] = acc;
     }
+    __sync_warp();
 
     if (args && args->o_ptr) {
         float *out_ptr = (float *)args->o_ptr;
-        for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++)
-            out_ptr[d] = out_vec[d];
+        for (uint32_t d = lane; d < DECODE_FIXED_HEAD_DIM; d += 32U)
+            out_ptr[d] = scratch.out_vec[d];
     }
+    __sync_warp();
 
-    uint32_t token_id = 0;
-    float best = out_vec[0];
-    for (uint32_t d = 1; d < DECODE_FIXED_HEAD_DIM; d++) {
-        if (out_vec[d] > best) {
-            best = out_vec[d];
-            token_id = d;
+    float lane_best = -CUDART_INF_F;
+    uint32_t lane_best_idx = 0;
+    for (uint32_t d = lane; d < DECODE_FIXED_HEAD_DIM; d += 32U) {
+        if (scratch.out_vec[d] > lane_best) {
+            lane_best = scratch.out_vec[d];
+            lane_best_idx = d;
         }
     }
+    scratch.best_vals[lane] = lane_best;
+    scratch.best_idx[lane] = lane_best_idx;
+    __sync_warp();
+
+    uint32_t token_id = 0;
+    if (lane == 0) {
+        float best = scratch.best_vals[0];
+        token_id = scratch.best_idx[0];
+        for (uint32_t i = 1; i < 32U; i++) {
+            if (scratch.best_vals[i] > best) {
+                best = scratch.best_vals[i];
+                token_id = scratch.best_idx[i];
+            }
+        }
+    }
+    token_id = __shfl_sync(0xFFFFFFFFU, token_id, 0);
 
     DecodeStepResult result;
     result.path_kind = DECODE_PATH_FIXED128;
     result.bytes_touched = seq_len * DECODE_FIXED_HEAD_DIM * KV_LAYOUT_SCALAR_BYTES * 2U;
     result.tile_count = (seq_len + DECODE_TILE_TOKENS - 1U) / DECODE_TILE_TOKENS;
-    result.cycle_estimate = (uint64_t)seq_len * DECODE_FIXED_HEAD_DIM * 4ULL;
+    result.cycle_estimate = (uint64_t)seq_len * DECODE_FIXED_HEAD_DIM * 2ULL;
     result.token_id = token_id;
     return result;
 }

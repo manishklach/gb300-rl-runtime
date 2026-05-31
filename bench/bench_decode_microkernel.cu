@@ -19,17 +19,17 @@ bench_decode_kernel(uint32_t *token_out,
                     uint32_t seq_len)
 {
     extern __shared__ uint8_t smem[];
-    if (threadIdx.x == 0) {
-        DecodeStepArgs args;
-        args.q_ptr = q_vec;
-        args.o_ptr = out_vec;
-        args.seq_len = seq_len;
-        args.head_dim = DECODE_FIXED_HEAD_DIM;
-        args.kv_block_base_idx = desc.kv_block_offset;
-        args.kv_block_count = 1;
-        args.output_token_offset = desc.output_token_offset;
-        DecodeStepResult result =
-            attention_decode_step_fixed128(&desc, &args, kv_block, sample_st, smem);
+    DecodeStepArgs args;
+    args.q_ptr = q_vec;
+    args.o_ptr = out_vec;
+    args.seq_len = seq_len;
+    args.head_dim = DECODE_FIXED_HEAD_DIM;
+    args.kv_block_base_idx = desc.kv_block_offset;
+    args.kv_block_count = 1;
+    args.output_token_offset = desc.output_token_offset;
+    DecodeStepResult result =
+        attention_decode_step_fixed128(&desc, &args, kv_block, sample_st, smem);
+    if ((threadIdx.x & 31) == 0) {
         token_out[0] = result.token_id;
         cycles_out[0] = result.cycle_estimate;
         bytes_out[0] = result.bytes_touched;
@@ -139,7 +139,7 @@ main(int argc, char **argv)
         out_sum += h_out[d];
 
     printf("GB300 RL Runtime — Fixed128 Decode Microkernel\n");
-    printf("  Mode:               v0.2.2-b real math path\n");
+    printf("  Mode:               fixed128 real math, warp-cooperative\n");
     printf("  Device:             %d\n", dev_id);
     printf("  Head dim:           %u\n", cfg.head_dim);
     printf("  Seq len:            %d\n", seq_len);
@@ -156,7 +156,7 @@ main(int argc, char **argv)
     printf("  Tokens/s:           %.0f\n", (double)iters / (ms / 1000.0));
     printf("  Output checksum:    %.6f\n", out_sum);
     printf("  Output argmax:      %u\n", token);
-    printf("  Note:               real fixed128 QK/softmax/V math; runtime worker still uses a synthetic query fallback when no explicit query is attached.\n");
+    printf("  Note:               real fixed128 QK/softmax/V math; dot, softmax, and output accumulation are now warp-cooperative, but the path is still single-warp and single-block only.\n");
 
     free(h_kv);
     cudaFree(d_kv);
