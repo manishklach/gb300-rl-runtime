@@ -221,7 +221,10 @@ make bench-tax          # control-plane tax comparison (syscall vs polling vs pe
 make bench-gpu-scheduler # GPU-resident rollout scheduler (zero CPU per-token work)
 make bench-decode       # fixed128 decode microkernel scaffold benchmark
 make bench-kv-layout    # KV block-layout scaffold and offset math check
+make bench-prefetch     # isolated global->shared staging microbenchmark
 make bench-all          # run all benchmarks
+make ci-build           # CPU-only build path used by GitHub Actions
+make ci-run             # CPU-only verification path used by GitHub Actions
 ```
 
 ## What Each Benchmark Proves
@@ -236,6 +239,7 @@ make bench-all          # run all benchmarks
 | `bench-gpu-scheduler` | `make bench-gpu-scheduler` | GPU-managed rollout lifecycle — zero CPU per-token work, CPU only sees request/done |
 | `bench-decode` | `make bench-decode` | Fixed128 real math path for one staged KV block, benchmarked separately from control-plane costs |
 | `bench-kv-layout` | `make bench-kv-layout` | KV block layout invariants, byte offsets, and fixed-shape memory math |
+| `bench-prefetch` | `make bench-prefetch` | Isolated global→shared KV staging cost, comparing baseline shared-memory copy against `cp.async` staging |
 
 ## Benchmark Snapshot
 
@@ -251,11 +255,12 @@ Note: token throughput reflects the stub attention (mock completion write).
 Real attention kernels would add compute latency; the numbers here measure
 the control path only.
 
-Results (run `make bench-all` on your hardware):
+Results (run `make bench-all` on your hardware and replace placeholders with dated measurements):
   Ring throughput:                > 50 M ops/s
   Full pipeline tokens/s:         measure on your hardware
   Pipeline rollouts/s:            measure on your hardware
   COW prefix KV memory saved:     > 90% for 10K branches
+  Prefetch staging BW:            measure with make bench-prefetch
   Control-plane tax:
     syscall per step:             ~X ns (baseline)
     userspace polling:            ~Y ns (fast, CPU-hungry)
@@ -269,7 +274,7 @@ Run on your hardware and open a PR to update this table.
 
 ## Labs
 
-The `lab/` directory contains five self-contained C experiments
+The `lab/` directory contains six self-contained C experiments
 that teach the close-to-metal concepts used in the runtime:
 
 | Lab | What it teaches | Runs on |
@@ -279,12 +284,14 @@ that teach the close-to-metal concepts used in the runtime:
 | `03_hugepage_tlb` | 4K vs 2M page TLB miss comparison — why hugepages matter | Linux w/ hugepages |
 | `04_syscall_vs_poll` | eventfd wakeup vs shared-memory polling — syscall cost | any Linux |
 | `05_doorbell_mock` | Producer/consumer with doorbell — device queue model | any Linux |
+| `06_memory_ordering` | publication ordering, stale-descriptor windows, release/acquire | any Linux |
 
 Each lab is standalone — `cd lab/01_false_sharing && make run`.
 
 ```bash
 make labs      # build all labs
 make lab-run   # run all labs sequentially
+make lab-run-safe # run the CPU-safe labs used in CI
 ```
 
 ## Design Rules

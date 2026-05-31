@@ -53,21 +53,22 @@ inc_thread(void *arg) {
 static double
 run_bench(volatile uint64_t *cnt_a, volatile uint64_t *cnt_b,
           uint64_t n, int use_padding) {
-  pthread_t t1, t2;
+  (void)use_padding;
+  pthread_t thr1, thr2;
   thread_arg a1 = { cnt_a, n };
   thread_arg a2 = { cnt_b, n };
 
-  struct timespec t0, t1;
+  struct timespec t0, t_end;
   clock_gettime(CLOCK_MONOTONIC, &t0);
 
-  pthread_create(&t1, NULL, inc_thread, &a1);
-  pthread_create(&t2, NULL, inc_thread, &a2);
-  pthread_join(t1, NULL);
-  pthread_join(t2, NULL);
+  pthread_create(&thr1, NULL, inc_thread, &a1);
+  pthread_create(&thr2, NULL, inc_thread, &a2);
+  pthread_join(thr1, NULL);
+  pthread_join(thr2, NULL);
 
-  clock_gettime(CLOCK_MONOTONIC, &t1);
-  double ns = (double)(t1.tv_sec - t0.tv_sec) * 1e9 +
-              (double)(t1.tv_nsec - t0.tv_nsec);
+  clock_gettime(CLOCK_MONOTONIC, &t_end);
+  double ns = (double)(t_end.tv_sec - t0.tv_sec) * 1e9 +
+              (double)(t_end.tv_nsec - t0.tv_nsec);
   return ns;
 }
 
@@ -87,7 +88,7 @@ main(int argc, char **argv) {
          ns_shared / 1e6, ns_per_op_shared);
 
   /* ── Version B: padded cache lines ── */
-  padded_counters padded = {0, 0};
+  padded_counters padded = {0};
   double ns_padded = run_bench(&padded.a, &padded.b, n, 1);
   double ns_per_op_padded = ns_padded / (2.0 * n);
 

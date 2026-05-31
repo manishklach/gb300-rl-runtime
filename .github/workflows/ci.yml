@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+jobs:
+  cpu-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libnuma-dev
+
+      - name: Build CPU-safe targets
+        run: make ci-build
+
+      - name: Run CPU-safe verification
+        run: make ci-run

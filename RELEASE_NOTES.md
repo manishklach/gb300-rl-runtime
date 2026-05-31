@@ -1,5 +1,22 @@
 # Release Notes
 
+## Unreleased
+
+### Benchmark Readiness Pass
+
+- added `bench/bench_prefetch.cu` and `make bench-prefetch` to isolate
+  global-to-shared KV staging bandwidth from the rest of the decode
+  path
+- added `lab/06_memory_ordering`, a standalone publication-ordering lab
+  that demonstrates stale-descriptor windows in a broken relaxed
+  publish path versus the runtime's release/acquire contract
+- added `.github/workflows/ci.yml` plus `make ci-build` / `make ci-run`
+  so the CPU control-plane path, smoke tests, and Linux-safe labs run
+  in GitHub Actions without a GPU
+- updated README and metrics docs to keep benchmark placeholders honest:
+  the snapshot table is still a run-on-your-hardware template until
+  real measured numbers are committed
+
 ## v0.3.1
 
 This release consolidates the post-`v0.3.0` correctness, decode, and

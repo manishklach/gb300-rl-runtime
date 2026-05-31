@@ -44,7 +44,7 @@ typedef struct {
 typedef struct {
   prod_idx  p;
   cons_idx  c;
-  uint64_t  slots[RING_SIZE] _Alignas(128);
+  _Alignas(128) uint64_t slots[RING_SIZE];
 } Ring;
 
 /* ─── Producer API ────────────────────────────────────────────── */

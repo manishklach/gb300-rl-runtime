@@ -40,10 +40,12 @@ BENCH_DECODE_SRC := $(BENCHDIR)/bench_decode_microkernel.cu
 BENCH_DECODE_TARGET := $(BLDDIR)/bench_decode_microkernel
 BENCH_KV_LAYOUT_SRC := $(BENCHDIR)/bench_kv_layout.cu
 BENCH_KV_LAYOUT_TARGET := $(BLDDIR)/bench_kv_layout
+BENCH_PREFETCH_SRC := $(BENCHDIR)/bench_prefetch.cu
+BENCH_PREFETCH_TARGET := $(BLDDIR)/bench_prefetch
 
-BENCH_TARGETS := $(BENCH_TARGET) $(BENCH_TRACE_TARGET) $(BENCH_COW_TARGET) $(BENCH_TAX_TARGET) $(BENCH_GPU_SCHED_TARGET) $(BENCH_DECODE_TARGET) $(BENCH_KV_LAYOUT_TARGET)
+BENCH_TARGETS := $(BENCH_TARGET) $(BENCH_TRACE_TARGET) $(BENCH_COW_TARGET) $(BENCH_TAX_TARGET) $(BENCH_GPU_SCHED_TARGET) $(BENCH_DECODE_TARGET) $(BENCH_KV_LAYOUT_TARGET) $(BENCH_PREFETCH_TARGET)
 
-.PHONY: all clean smoke test bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-all
+.PHONY: all clean smoke test bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-prefetch bench-all ci-build ci-run
 
 all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(BENCH_TARGETS)
 
@@ -78,7 +80,7 @@ $(BENCH_COW_TARGET): $(BENCH_COW_SRC) $(BLDDIR)/libruntime.a
 	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
 
 $(BENCH_TAX_TARGET): $(BENCH_TAX_SRC)
-	$(CC) $(CFLAGS) $< -lpthread -o $@
+	$(CC) $(CFLAGS) -x c $< -lpthread -o $@
 
 $(BENCH_GPU_SCHED_TARGET): $(BENCH_GPU_SCHED_SRC) $(BLDDIR)/libruntime.a
 	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
@@ -87,6 +89,9 @@ $(BENCH_DECODE_TARGET): $(BENCH_DECODE_SRC) $(BLDDIR)/libruntime.a
 	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
 
 $(BENCH_KV_LAYOUT_TARGET): $(BENCH_KV_LAYOUT_SRC) $(BLDDIR)/libruntime.a
+	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
+
+$(BENCH_PREFETCH_TARGET): $(BENCH_PREFETCH_SRC) $(BLDDIR)/libruntime.a
 	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
 
 $(SMOKE_TARGET): $(SMOKE_SRC) $(SRCDIR)/ring.c $(SRCDIR)/pipeline.c $(SRCDIR)/rollout.c $(SRCDIR)/decode_batch.c $(BLDDIR)
@@ -122,28 +127,55 @@ bench-decode: $(BENCH_DECODE_TARGET)
 bench-kv-layout: $(BENCH_KV_LAYOUT_TARGET)
 	./$(BENCH_KV_LAYOUT_TARGET)
 
-bench-all: bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout
+bench-prefetch: $(BENCH_PREFETCH_TARGET)
+	./$(BENCH_PREFETCH_TARGET)
 
-LABS := 01_false_sharing 02_spsc_ring 03_hugepage_tlb 04_syscall_vs_poll 05_doorbell_mock
+bench-all: bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-prefetch
 
-.PHONY: labs lab-clean
+LABS := 01_false_sharing 02_spsc_ring 03_hugepage_tlb 04_syscall_vs_poll 05_doorbell_mock 06_memory_ordering
+LABS_CPU_SAFE := 01_false_sharing 02_spsc_ring 04_syscall_vs_poll 05_doorbell_mock 06_memory_ordering
+
+.PHONY: labs lab-run lab-run-safe lab-clean
 
 labs:
 	@for lab in $(LABS); do \
 		echo "=== Building lab/$$lab ==="; \
-		$(MAKE) -C lab/$$lab; \
+		$(MAKE) -C lab/$$lab || exit $$?; \
 	done
 
 lab-run:
 	@for lab in $(LABS); do \
 		echo "=== Running lab/$$lab ==="; \
-		$(MAKE) -C lab/$$lab run; \
+		$(MAKE) -C lab/$$lab run || exit $$?; \
 		echo; \
 	done
 
+lab-run-safe:
+	@echo "=== Running lab/01_false_sharing ==="
+	@$(MAKE) -C lab/01_false_sharing run ARGS="1000000"
+	@echo
+	@echo "=== Running lab/02_spsc_ring ==="
+	@$(MAKE) -C lab/02_spsc_ring run ARGS="1000000"
+	@echo
+	@echo "=== Running lab/04_syscall_vs_poll ==="
+	@$(MAKE) -C lab/04_syscall_vs_poll run ARGS="10000"
+	@echo
+	@echo "=== Running lab/05_doorbell_mock ==="
+	@$(MAKE) -C lab/05_doorbell_mock run ARGS="200000"
+	@echo
+	@echo "=== Running lab/06_memory_ordering ==="
+	@$(MAKE) -C lab/06_memory_ordering run ARGS="200000"
+	@echo
+
+ci-build: $(SMOKE_TARGET) $(BENCH_TAX_TARGET) labs
+
+ci-run: smoke
+	./$(BENCH_TAX_TARGET) 100000
+	$(MAKE) lab-run-safe
+
 lab-clean:
 	@for lab in $(LABS); do \
-		$(MAKE) -C lab/$$lab clean; \
+		$(MAKE) -C lab/$$lab clean || exit $$?; \
 	done
 
 clean:

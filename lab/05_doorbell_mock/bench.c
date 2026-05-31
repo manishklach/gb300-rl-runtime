@@ -47,7 +47,7 @@ typedef struct {
   char         _pad1[60];
   _Alignas(64) volatile uint32_t consumed;  /* consumer writes after dequeue */
   char         _pad2[60];
-  WorkDescriptor slots[RING_SIZE] _Alignas(128);
+  _Alignas(128) WorkDescriptor slots[RING_SIZE];
 } DoorbellRing;
 
 /* ─── Producer side ───────────────────────────────────────────── */

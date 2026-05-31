@@ -29,8 +29,14 @@ bench_mode_a(int n)
     uint64_t val = 1;
     uint64_t t0 = now_ns();
     for (int i = 0; i < n; i++) {
-        write(efd, &val, sizeof(val));
-        read(efd, &val, sizeof(val));
+        if (write(efd, &val, sizeof(val)) != (ssize_t)sizeof(val)) {
+            close(efd);
+            return -1;
+        }
+        if (read(efd, &val, sizeof(val)) != (ssize_t)sizeof(val)) {
+            close(efd);
+            return -1;
+        }
     }
     uint64_t t1 = now_ns();
     close(efd);
@@ -44,47 +50,88 @@ typedef struct {
     char pad[48];
 } PollSlot;
 
+typedef struct {
+    PollSlot *slot;
+    int n;
+} PollBenchArg;
+
+static void *poll_consumer_thread(void *arg)
+{
+    PollBenchArg *pa = (PollBenchArg *)arg;
+    for (int i = 0; i < pa->n; i++) {
+        while (__atomic_load_n(&pa->slot->head, __ATOMIC_ACQUIRE) < (uint64_t)(i + 1))
+            __asm__ volatile("pause");
+        __atomic_store_n(&pa->slot->tail, i + 1, __ATOMIC_RELEASE);
+    }
+    return NULL;
+}
+
 static double
 bench_mode_b(int n)
 {
     PollSlot *slot = (PollSlot *)calloc(1, 64);
     if (!slot) return -1;
+    PollBenchArg arg = { .slot = slot, .n = n };
+    pthread_t consumer;
+    if (pthread_create(&consumer, NULL, poll_consumer_thread, &arg) != 0) {
+        free(slot);
+        return -1;
+    }
 
     uint64_t t0 = now_ns();
     for (int i = 0; i < n; i++) {
         __atomic_store_n(&slot->head, i + 1, __ATOMIC_RELEASE);
-        while (__atomic_load_n(&slot->tail, __ATOMIC_ACQUIRE) < i + 1)
+        while (__atomic_load_n(&slot->tail, __ATOMIC_ACQUIRE) < (uint64_t)(i + 1))
             __asm__ volatile("pause"); /* spin */
     }
     uint64_t t1 = now_ns();
+    pthread_join(consumer, NULL);
     free(slot);
     return ns_per_op(t1 - t0, n);
 }
 
 /* ─── Mode C: persistent worker + command ring (reference) ────── */
+typedef struct {
+    volatile uint64_t *ring;
+    int n;
+} RingBenchArg;
+
+static void *ring_consumer_thread(void *arg)
+{
+    RingBenchArg *ra = (RingBenchArg *)arg;
+    for (int i = 0; i < ra->n; i++) {
+        while (__atomic_load_n(&ra->ring[1], __ATOMIC_ACQUIRE) < (uint64_t)(i + 1))
+            __asm__ volatile("pause");
+        (void)ra->ring[0];
+        __atomic_store_n(&ra->ring[2], i + 1, __ATOMIC_RELEASE);
+    }
+    return NULL;
+}
+
 static double
 bench_mode_c(int n)
 {
-    /* allocate ring in heap (user-space only — simulates the ring) */
-    volatile uint64_t *ring = (volatile uint64_t *)aligned_alloc(64, 64 * 2);
+    /* 0 = payload, 1 = producer tail, 2 = consumer head */
+    volatile uint64_t *ring = (volatile uint64_t *)aligned_alloc(64, 64 * 3);
     if (!ring) return -1;
-    memset((void *)ring, 0, 128);
+    memset((void *)ring, 0, 64 * 3);
+
+    RingBenchArg arg = { .ring = ring, .n = n };
+    pthread_t consumer;
+    if (pthread_create(&consumer, NULL, ring_consumer_thread, &arg) != 0) {
+        free((void *)ring);
+        return -1;
+    }
 
     uint64_t t0 = now_ns();
     for (int i = 0; i < n; i++) {
         ring[0] = i;                        /* producer write */
         __atomic_store_n(&ring[1], i + 1, __ATOMIC_RELEASE); /* commit */
-
-        while (__atomic_load_n(&ring[1], __ATOMIC_ACQUIRE) > 0) {
-            uint64_t v = ring[0];
-            (void)v;
-            break;
-        }
-        /* single-pass: consumer reads once per iteration in the
-           reference mode, analogous to the persistent worker's
-           ring_consume() call */
+        while (__atomic_load_n(&ring[2], __ATOMIC_ACQUIRE) < (uint64_t)(i + 1))
+            __asm__ volatile("pause");
     }
     uint64_t t1 = now_ns();
+    pthread_join(consumer, NULL);
     free((void *)ring);
     return ns_per_op(t1 - t0, n);
 }

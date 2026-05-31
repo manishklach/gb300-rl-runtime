@@ -1,5 +1,5 @@
-CC   := gcc
-CFLAGS := -O3 -Wall -Wextra -std=c11 -D_POSIX_C_SOURCE=200809L -march=native -lpthread
+CC := gcc
+CFLAGS := -O3 -Wall -Wextra -std=c11 -D_POSIX_C_SOURCE=200809L -march=native -pthread
 TARGET := bench
 ARGS ?=
 
@@ -12,9 +12,6 @@ $(TARGET): bench.c
 
 run: $(TARGET)
 	./$(TARGET) $(ARGS)
-
-perf: $(TARGET)
-	perf stat -e dTLB-loads,dTLB-load-misses ./$(TARGET)
 
 clean:
 	rm -f $(TARGET)

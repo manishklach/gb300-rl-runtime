@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <sched.h>
 #include <time.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
@@ -24,7 +25,7 @@
 /* ─── Shared state for poll-based wakeup ──────────────────────── */
 
 typedef struct {
-  volatile uint64_t  flag      _Alignas(64);
+  _Alignas(64) _Atomic uint64_t flag;
   char               _pad[56];
 } poll_state;
 
@@ -49,9 +50,13 @@ typedef struct {
 static void *
 efd_consumer(void *arg) {
   efd_arg *ea = (efd_arg *)arg;
-  uint64_t val;
-  for (uint64_t i = 0; i < ea->count; i++)
-    read(ea->efd, &val, sizeof(val));       /* blocking syscall */
+  uint64_t seen = 0;
+  while (seen < ea->count) {
+    uint64_t val = 0;
+    if (read(ea->efd, &val, sizeof(val)) != (ssize_t)sizeof(val))
+      return NULL;
+    seen += val;
+  }
   return NULL;
 }
 
@@ -67,7 +72,10 @@ bench_eventfd(uint64_t n) {
   double t0 = now_ns();
   for (uint64_t i = 0; i < n; i++) {
     uint64_t one = 1;
-    write(efd, &one, sizeof(one));          /* waking syscall */
+    if (write(efd, &one, sizeof(one)) != (ssize_t)sizeof(one)) {
+      close(efd);
+      return -1;
+    }
   }
   pthread_join(t, NULL);
   double t1 = now_ns();
@@ -89,11 +97,12 @@ static void *
 poll_consumer(void *arg) {
   poll_arg *pa = (poll_arg *)arg;
   for (uint64_t i = 0; i < pa->count; ) {
-    if (pa->ps->flag) {
-      pa->ps->flag = 0;
+    if (atomic_load_explicit(&pa->ps->flag, memory_order_acquire) != 0) {
+      atomic_store_explicit(&pa->ps->flag, 0, memory_order_release);
       i++;
+    } else {
+      __asm__ volatile("pause");
     }
-    /* no yield — tight poll, measuring worst-case CPU cost */
   }
   return NULL;
 }
@@ -107,8 +116,9 @@ bench_poll(uint64_t n) {
 
   double t0 = now_ns();
   for (uint64_t i = 0; i < n; i++) {
-    ps.flag = 1;                            /* no syscall */
-    /* producer doesn't wait — consumer will see it */
+    while (atomic_load_explicit(&ps.flag, memory_order_acquire) != 0)
+      __asm__ volatile("pause");
+    atomic_store_explicit(&ps.flag, 1, memory_order_release);
   }
   pthread_join(t, NULL);
   double t1 = now_ns();
@@ -124,8 +134,8 @@ static void *
 yield_consumer(void *arg) {
   poll_arg *pa = (poll_arg *)arg;
   for (uint64_t i = 0; i < pa->count; ) {
-    if (pa->ps->flag) {
-      pa->ps->flag = 0;
+    if (atomic_load_explicit(&pa->ps->flag, memory_order_acquire) != 0) {
+      atomic_store_explicit(&pa->ps->flag, 0, memory_order_release);
       i++;
     } else {
       sched_yield();                        /* light-weight syscall */
@@ -143,7 +153,9 @@ bench_yield(uint64_t n) {
 
   double t0 = now_ns();
   for (uint64_t i = 0; i < n; i++) {
-    ps.flag = 1;
+    while (atomic_load_explicit(&ps.flag, memory_order_acquire) != 0)
+      __asm__ volatile("pause");
+    atomic_store_explicit(&ps.flag, 1, memory_order_release);
   }
   pthread_join(t, NULL);
   double t1 = now_ns();

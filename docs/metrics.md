@@ -39,6 +39,18 @@ cd lab/03_hugepage_tlb && make perf
 cd lab/04_syscall_vs_poll && make run
 ```
 
+## Memory Ordering
+
+| Metric | What to watch | How to measure |
+|--------|----------------|----------------|
+| Stale descriptor observations | Non-zero in broken publish mode | `lab/06_memory_ordering/bench` |
+| Visibility gap | Window between publishing the flag and payload visibility | (same bench) |
+| Correct publish behavior | Zero stale reads in release/acquire mode | (same bench) |
+
+```bash
+cd lab/06_memory_ordering && make run
+```
+
 ## Doorbell Queue (Mock)
 
 | Metric | Target | How to measure |
@@ -149,6 +161,21 @@ make bench-gpu-scheduler                      # default: 10K rollouts, 128 token
 make bench-gpu-scheduler ARGS="-r 50000 -t 256"
 ```
 
+## Prefetch Microbenchmark
+
+Measured by `bench/bench_prefetch.cu`:
+
+| Metric | Target | How to measure |
+|--------|:------:|----------------|
+| Baseline shared-copy bandwidth | measure on your GPU | `make bench-prefetch` |
+| `cp.async` staged bandwidth | measure on your GPU | `make bench-prefetch` |
+| `cp.async` speedup | > 1.0x on Ampere+ | Included in output |
+
+```bash
+make bench-prefetch
+make bench-prefetch ARGS="8192"
+```
+
 ## What Each Benchmark Proves
 
 | Benchmark | Proves |
@@ -159,6 +186,7 @@ make bench-gpu-scheduler ARGS="-r 50000 -t 256"
 | `bench-cow` | Memory saved by shared prefix KV |
 | `bench-tax` | Control-plane overhead: syscall vs polling vs persistent worker |
 | `bench-gpu-scheduler` | GPU-managed rollout lifecycle — zero CPU per-token work |
+| `bench-prefetch` | Isolated KV staging bandwidth with and without `cp.async` |
 
 ## How to Contribute a Benchmark
 
