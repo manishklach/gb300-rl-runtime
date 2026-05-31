@@ -1,6 +1,6 @@
-# Decode Microkernel Scaffold
+# Decode Microkernel
 
-This document describes the `v0.2.2-a` scaffold for the first real
+This document describes the `v0.2.2-b` fixed-shape path for the first real
 hardware-close decode path.
 
 ## Current State
@@ -14,12 +14,19 @@ decode microkernel:
 - `bench/bench_decode_microkernel.cu`
 - `bench/bench_kv_layout.cu`
 
-The implementation is intentionally still a scaffold:
+The implementation now has one mathematically real fixed path:
 
 - shared-memory staging is real
-- the worker path calls the decode helper
-- the decode helper reports deterministic metadata
-- actual QK/softmax/V attention math is still not implemented
+- fixed128 decode executes real QK / softmax / V accumulation math
+- the decode benchmark exercises explicit query and output buffers
+- the CUDA test suite compares the kernel output against a host reference
+
+What is still limited:
+
+- the runtime worker still synthesizes a query vector when no explicit
+  query buffer is attached
+- only one fixed shape is supported
+- only one staged KV block is handled in the current real path
 
 ## Fixed Path
 
@@ -31,31 +38,28 @@ The first path is intentionally narrow:
 - vector load target: `16` bytes
 - prefetch stages: `3`
 
-This is enough to start measuring memory layout and worker integration
-without pretending the math path is done.
+This is enough to measure a real math path without pretending the whole
+runtime is model-complete.
 
 ## Why This Split Exists
 
-The repository now distinguishes:
+The repository distinguishes:
 
 - control-plane benchmarks
-- decode-microkernel scaffolds
-- future real attention benchmarks
+- fixed-shape real decode benchmarks
+- future broader attention benchmarks
 
 That separation matters because queue correctness and hardware math are
 different problems with different bottlenecks.
 
 ## What Comes Next
 
-The next decode-focused step should replace the scaffold behavior in
-`cu/attention_decode.cu` with:
+The next decode-focused steps should broaden the real path in
+`cu/attention_decode.cu`:
 
-1. Q load
-2. KV tile staging
-3. QK dot-product tiles
-4. stable softmax update
-5. V accumulation
-6. output writeback
-
-At that point the decode benchmark can become the first real math-path
-benchmark in the repo.
+1. multiple KV blocks per decode step
+2. explicit descriptor/query/output plumbing in the runtime path
+3. more parallelism than the current lane-0 reference-style execution
+4. clearer split between correctness kernel and tuned kernel
+The current benchmark is already the first real math-path benchmark; the
+remaining work is about expanding and tuning it.

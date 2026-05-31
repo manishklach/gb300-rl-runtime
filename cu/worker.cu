@@ -26,8 +26,16 @@ process_descriptor(const Descriptor *desc, KVArena *arena,
                    CompletionRing *comp_ring, SampleState *sample_st,
                    uint8_t *smem_buf) {
   uint8_t *kv_src = arena_block_ptr(arena, desc->kv_block_offset);
+  DecodeStepArgs args;
+  args.q_ptr = NULL;
+  args.o_ptr = NULL;
+  args.seq_len = desc->num_kv_blocks == 0 ? 1U : (uint32_t)desc->num_kv_blocks;
+  args.head_dim = DECODE_FIXED_HEAD_DIM;
+  args.kv_block_base_idx = desc->kv_block_offset;
+  args.kv_block_count = 1;
+  args.output_token_offset = desc->output_token_offset;
   DecodeStepResult result =
-      attention_decode_step_fixed128(desc, kv_src, sample_st, smem_buf);
+      attention_decode_step_fixed128(desc, &args, kv_src, sample_st, smem_buf);
 
   Completion comp;
   comp.seq_id          = desc->seq_id;

@@ -4,13 +4,20 @@
 #include "kv_layout.h"
 #include "sample.h"
 #include <stdint.h>
+#include <cuda_fp16.h>
 
 /*
- * v0.2.2-a decode microkernel scaffold.
+ * v0.2.2-b fixed-shape decode path.
  *
- * The first step is intentionally narrow and honest: one fixed-path
- * interface, one shared-memory staging plan, and one stubbed device
- * implementation that is ready to be replaced by real attention math.
+ * This path performs real single-token attention math for one fixed
+ * configuration:
+ *   - head_dim = 128
+ *   - fp16/bf16-sized KV lanes
+ *   - one decode query against one staged KV block
+ *
+ * The runtime worker may still provide a synthesized query when no
+ * explicit query buffer is attached, but the decode routine itself now
+ * runs real QK / softmax / V accumulation math.
  */
 
 #define DECODE_FIXED_HEAD_DIM      KV_LAYOUT_HEAD_DIM
@@ -25,7 +32,6 @@ typedef enum {
 
 typedef struct {
     const void   *q_ptr;
-    const uint8_t *kv_block_base;
     void         *o_ptr;
     uint32_t      seq_len;
     uint32_t      head_dim;
@@ -63,6 +69,7 @@ DecodeMicrokernelConfig attention_decode_config_fixed128(void);
 #if defined(__CUDACC__)
 __device__ DecodeStepResult
 attention_decode_step_fixed128(const Descriptor *desc,
+                               const DecodeStepArgs *args,
                                const uint8_t *kv_block_base,
                                SampleState *sample_st,
                                uint8_t *smem_buf);

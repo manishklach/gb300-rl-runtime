@@ -1,5 +1,24 @@
 # Release Notes
 
+## v0.2.2-b
+
+This checkpoint upgrades the fixed128 decode path from a pure scaffold to
+one mathematically real kernel path for a narrow configuration.
+
+- `cu/attention_decode.cu` now performs real QK / softmax / V
+  accumulation math for one fixed-shape decode step
+- `bench/bench_decode_microkernel.cu` now exercises explicit query and
+  output buffers and reports real math-path measurements
+- `test/test_bench.cu` now includes a CUDA-vs-reference correctness test
+  for the fixed128 decode path
+
+Current limitation:
+
+- the runtime worker still falls back to a synthesized query vector when
+  no explicit query buffer is attached to the decode call
+- the real path is still intentionally narrow: one fixed head dimension,
+  one staged KV block, one lane-0 style correctness-first implementation
+
 ## v0.2.2-a scaffold
 
 This checkpoint adds the first repository scaffolding for a real,

@@ -19,12 +19,14 @@
 #include "reward.h"
 #include "kv_prefix.h"
 #include "request.h"
+#include "attention_decode.h"
 #include "warp_broadcast.cuh"
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <math.h>
 #include <cuda_runtime.h>
 
 /* ─── Declare persistent worker kernel from worker.cu ──────────── */
@@ -50,6 +52,102 @@ test_warp_broadcast_kernel(uint64_t *seq_out, uint32_t *offset_out,
   seq_out[lane] = warp_broadcast_u64(seq, 0);
   offset_out[lane] = warp_broadcast_u32(off, 0);
   cookie_out[lane] = warp_broadcast_u64(cookie, 0);
+}
+
+__global__ static void
+test_decode_fixed128_kernel(float *out_vec,
+                            uint32_t *token_out,
+                            uint32_t *bytes_out,
+                            uint32_t *tiles_out,
+                            uint64_t *cycles_out,
+                            const __half *q_vec,
+                            const uint8_t *kv_block,
+                            SampleState *sample_st,
+                            Descriptor desc,
+                            uint32_t seq_len) {
+  extern __shared__ uint8_t smem[];
+  if (threadIdx.x == 0) {
+    DecodeStepArgs args;
+    args.q_ptr = q_vec;
+    args.o_ptr = out_vec;
+    args.seq_len = seq_len;
+    args.head_dim = DECODE_FIXED_HEAD_DIM;
+    args.kv_block_base_idx = desc.kv_block_offset;
+    args.kv_block_count = 1;
+    args.output_token_offset = desc.output_token_offset;
+    DecodeStepResult result =
+        attention_decode_step_fixed128(&desc, &args, kv_block, sample_st, smem);
+    token_out[0] = result.token_id;
+    bytes_out[0] = result.bytes_touched;
+    tiles_out[0] = result.tile_count;
+    cycles_out[0] = result.cycle_estimate;
+  }
+}
+
+static void
+fill_decode_inputs(__half *q_vec, __half *kv_block) {
+  for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++)
+    q_vec[d] = __float2half_rn((float)((int)(d % 17U) - 8) / 8.0f);
+
+  for (uint32_t t = 0; t < KV_LAYOUT_TOKENS_PER_BLOCK; t++) {
+    for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++) {
+      const float k_val =
+          (float)(((int)((t + 1U) * ((d % 13U) + 1U)) % 23) - 11) / 32.0f;
+      const float v_val =
+          (float)(((int)((t + 3U) * ((d % 11U) + 5U)) % 29) - 14) / 29.0f;
+      kv_block[t * DECODE_FIXED_HEAD_DIM + d] = __float2half_rn(k_val);
+      kv_block[(KV_LAYOUT_K_BYTES / sizeof(__half)) +
+               t * DECODE_FIXED_HEAD_DIM + d] = __float2half_rn(v_val);
+    }
+  }
+}
+
+static void
+reference_decode_fixed128(float *out_vec, uint32_t *token_id,
+                          const __half *q_vec, const __half *kv_block,
+                          uint32_t seq_len) {
+  float scores[KV_LAYOUT_TOKENS_PER_BLOCK];
+  float probs[KV_LAYOUT_TOKENS_PER_BLOCK];
+  const __half *v_block = kv_block + (KV_LAYOUT_K_BYTES / sizeof(__half));
+  const float scale = 1.0f / sqrtf((float)DECODE_FIXED_HEAD_DIM);
+  float max_score = -1.0e30f;
+
+  if (seq_len > KV_LAYOUT_TOKENS_PER_BLOCK)
+    seq_len = KV_LAYOUT_TOKENS_PER_BLOCK;
+
+  for (uint32_t t = 0; t < seq_len; t++) {
+    float dot = 0.0f;
+    for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++)
+      dot += __half2float(q_vec[d]) *
+             __half2float(kv_block[t * DECODE_FIXED_HEAD_DIM + d]);
+    scores[t] = dot * scale;
+    if (scores[t] > max_score)
+      max_score = scores[t];
+  }
+
+  float denom = 0.0f;
+  for (uint32_t t = 0; t < seq_len; t++) {
+    probs[t] = expf(scores[t] - max_score);
+    denom += probs[t];
+  }
+  if (denom == 0.0f)
+    denom = 1.0f;
+
+  for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++)
+    out_vec[d] = 0.0f;
+
+  for (uint32_t t = 0; t < seq_len; t++) {
+    const float p = probs[t] / denom;
+    for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++)
+      out_vec[d] += p *
+                    __half2float(v_block[t * DECODE_FIXED_HEAD_DIM + d]);
+  }
+
+  *token_id = 0;
+  for (uint32_t d = 1; d < DECODE_FIXED_HEAD_DIM; d++) {
+    if (out_vec[d] > out_vec[*token_id])
+      *token_id = d;
+  }
 }
 
 /* ─── Test helpers ─────────────────────────────────────────────── */
@@ -508,6 +606,86 @@ test_warp_broadcast(void) {
 }
 
 static int
+test_decode_fixed128_reference(void) {
+  printf("  test_decode_fixed128_reference ... ");
+  if (!cuda_is_available()) {
+    printf("SKIP (no CUDA device)\n");
+    return 0;
+  }
+
+  const uint32_t seq_len = 17;
+  DecodeMicrokernelConfig cfg = attention_decode_config_fixed128();
+  Descriptor desc;
+  memset(&desc, 0, sizeof(desc));
+  desc.seq_id = 99;
+  desc.kv_block_offset = 0;
+  desc.num_kv_blocks = 1;
+  desc.output_token_offset = 3;
+
+  __half h_q[DECODE_FIXED_HEAD_DIM];
+  __half *h_kv = (__half *)malloc(KV_LAYOUT_BLOCK_BYTES);
+  float ref_out[DECODE_FIXED_HEAD_DIM];
+  float gpu_out[DECODE_FIXED_HEAD_DIM];
+  uint32_t ref_token = 0, gpu_token = 0, gpu_bytes = 0, gpu_tiles = 0;
+  uint64_t gpu_cycles = 0;
+
+  fill_decode_inputs(h_q, h_kv);
+  reference_decode_fixed128(ref_out, &ref_token, h_q, h_kv, seq_len);
+
+  __half *d_q = NULL;
+  uint8_t *d_kv = NULL;
+  float *d_out = NULL;
+  uint32_t *d_token = NULL, *d_bytes = NULL, *d_tiles = NULL;
+  uint64_t *d_cycles = NULL;
+  SampleState *d_sample = NULL;
+
+  cudaMalloc(&d_q, sizeof(h_q));
+  cudaMalloc(&d_kv, KV_LAYOUT_BLOCK_BYTES);
+  cudaMalloc(&d_out, sizeof(gpu_out));
+  cudaMalloc(&d_token, sizeof(uint32_t));
+  cudaMalloc(&d_bytes, sizeof(uint32_t));
+  cudaMalloc(&d_tiles, sizeof(uint32_t));
+  cudaMalloc(&d_cycles, sizeof(uint64_t));
+  cudaMalloc(&d_sample, sizeof(SampleState));
+  cudaMemcpy(d_q, h_q, sizeof(h_q), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_kv, h_kv, KV_LAYOUT_BLOCK_BYTES, cudaMemcpyHostToDevice);
+  cudaMemset(d_out, 0, sizeof(gpu_out));
+  cudaMemset(d_sample, 0, sizeof(SampleState));
+
+  test_decode_fixed128_kernel<<<1, 32, cfg.shared_bytes>>>(
+      d_out, d_token, d_bytes, d_tiles, d_cycles, d_q, d_kv, d_sample, desc,
+      seq_len);
+  cudaDeviceSynchronize();
+
+  cudaMemcpy(gpu_out, d_out, sizeof(gpu_out), cudaMemcpyDeviceToHost);
+  cudaMemcpy(&gpu_token, d_token, sizeof(gpu_token), cudaMemcpyDeviceToHost);
+  cudaMemcpy(&gpu_bytes, d_bytes, sizeof(gpu_bytes), cudaMemcpyDeviceToHost);
+  cudaMemcpy(&gpu_tiles, d_tiles, sizeof(gpu_tiles), cudaMemcpyDeviceToHost);
+  cudaMemcpy(&gpu_cycles, d_cycles, sizeof(gpu_cycles), cudaMemcpyDeviceToHost);
+
+  for (uint32_t d = 0; d < DECODE_FIXED_HEAD_DIM; d++)
+    assert(fabsf(gpu_out[d] - ref_out[d]) < 1.0e-4f);
+
+  assert(gpu_token == ref_token);
+  assert(gpu_bytes == seq_len * DECODE_FIXED_HEAD_DIM * KV_LAYOUT_SCALAR_BYTES * 2U);
+  assert(gpu_tiles == (seq_len + DECODE_TILE_TOKENS - 1U) / DECODE_TILE_TOKENS);
+  assert(gpu_cycles == (uint64_t)seq_len * DECODE_FIXED_HEAD_DIM * 4ULL);
+
+  cudaFree(d_q);
+  cudaFree(d_kv);
+  cudaFree(d_out);
+  cudaFree(d_token);
+  cudaFree(d_bytes);
+  cudaFree(d_tiles);
+  cudaFree(d_cycles);
+  cudaFree(d_sample);
+  free(h_kv);
+
+  printf("OK\n");
+  return 0;
+}
+
+static int
 test_reward_ring(void) {
   printf("  test_reward_ring ... ");
   RewardRing rr;
@@ -612,6 +790,7 @@ main(int argc, char **argv) {
   test_kv_prefix();
   test_done_ring_overflow();
   test_warp_broadcast();
+  test_decode_fixed128_reference();
 
   if (cuda_is_available()) {
     printf("\n── Quick pipeline test (1000 tokens) ──\n\n");
