@@ -170,6 +170,7 @@ story is best described as "modern NVIDIA GPUs on Linux" rather than
 | Fixed128 decode path | **Partial** | Real QK / softmax / V math for one fixed-shape path; the decode kernel is now warp-cooperative for score, softmax, and output accumulation, and the runtime routes descriptors through a tiny weighted model-state block plus query projection |
 | Pipeline windows | **Real** | Snapshot helpers expose queue occupancy, stage credit headroom, and suggested batch windows for decode/reward/trajectory stages; pipeline benches now use them to gate batched decode admission |
 | Descriptor windows | **Real** | Host-side decode batch helpers prepare and submit grouped descriptor windows with one ring commit instead of one commit per step |
+| `cp.async` prefetch path | **Partial** | The prefetch layer now uses lane-striped 16-byte `cp.async` helpers and explicit commit/wait flow, but broader multistage overlap is still limited |
 | KV layout descriptor | **Scaffold** | Concrete fixed128 KV block math, alignment invariants, and offset helpers |
 | Attention decoder | **Partial** | Fixed128 real path exists; broader runtime/model coverage is still incomplete |
 | Reward model | **Stub** | `reward_score_mock()` returns `(n & 0xFF) / 255.0f` — no real scoring |

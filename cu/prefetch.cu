@@ -1,32 +1,38 @@
 #include "prefetch.h"
+#include "cp_async.cuh"
 #include <cuda_runtime.h>
 
 /* In a production runtime these would be templated on block size.
  * For the prototype we fix KV_BLOCK_SIZE = 16384 bytes. */
 
 __device__ void
-prefetch_issue(const uint8_t *hbm_src, uint8_t *smem_dst) {
-  /* cp.async.ca: pull from HBM into SMEM with cache-line bypass.
-   * The last .L1::evictAll argument hints that this data should
-   * not pollute L1. */
+prefetch_issue_partial(const uint8_t *hbm_src, uint8_t *smem_dst,
+                       uint32_t nbytes) {
+  const uint32_t lane = threadIdx.x & 31U;
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
-  asm volatile(
-    "cp.async.ca.shared.global.L1::evictAll [%0], [%1], %2;\n"
-    :
-    : "r"(smem_dst), "l"(hbm_src), "n"(KV_BLOCK_SIZE)
-    : "memory");
+  for (uint32_t off = lane * PREFETCH_CHUNK_BYTES;
+       off < nbytes;
+       off += 32U * PREFETCH_CHUNK_BYTES) {
+    cp_async_ca_16(smem_dst + off, hbm_src + off);
+  }
 #else
-  /* fallback: plain memcpy (slower, but works on any arch) */
-  for (int i = 0; i < KV_BLOCK_SIZE; i++)
-    smem_dst[i] = hbm_src[i];
+  for (uint32_t off = lane; off < nbytes; off += 32U)
+    smem_dst[off] = hbm_src[off];
+  __syncthreads();
 #endif
+}
+
+__device__ void
+prefetch_issue(const uint8_t *hbm_src, uint8_t *smem_dst) {
+  prefetch_issue_partial(hbm_src, smem_dst, KV_BLOCK_SIZE);
 }
 
 __device__ void
 prefetch_wait(void) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
-  asm volatile("cp.async.commit_group;\n" ::);
-  asm volatile("cp.async.wait_group 0;\n" ::);
+  cp_async_commit();
+  cp_async_wait_all();
+  __syncthreads();
 #else
   /* on pre-Ampere, cp.async is unsupported — nothing to wait for */
   __syncthreads();
@@ -55,7 +61,8 @@ __device__ void
 prefetch_pipeline_stage(PrefetchPipelineState *state,
                         uint32_t stage_idx,
                         const uint8_t *hbm_src) {
-  prefetch_issue(hbm_src, prefetch_pipeline_stage_ptr(state, stage_idx));
+  prefetch_issue_partial(hbm_src, prefetch_pipeline_stage_ptr(state, stage_idx),
+                         state->stage_bytes);
 }
 
 __device__ void

@@ -22,6 +22,8 @@ The implementation now has one mathematically real fixed path:
   lane-0 driven
 - the QK score pass now uses 8-lane groups per token row rather than
   assigning an entire row to one lane
+- the shared-memory prefetch layer now uses lane-striped 16-byte
+  `cp.async` helpers rather than a fake whole-block inline-assembly copy
 - the decode benchmark exercises explicit query and output buffers
 - the CUDA test suite compares the kernel output against a host reference
 

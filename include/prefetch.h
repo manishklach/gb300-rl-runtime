@@ -10,6 +10,7 @@
 
 #define PREFETCH_DEPTH   3    /* triple buffering */
 #define KV_BLOCK_SIZE    16384 /* bytes; must match arena block_size */
+#define PREFETCH_CHUNK_BYTES 16U
 
 /* Prefetch pipeline slot */
 typedef struct {
@@ -31,6 +32,8 @@ void prefetch_init(int smem_per_sm);
 /* Device-side: issue cp.async for one KV block.
  * Called by the persistent worker before attention. */
 __device__ void prefetch_issue(const uint8_t *hbm_src, uint8_t *smem_dst);
+__device__ void prefetch_issue_partial(const uint8_t *hbm_src, uint8_t *smem_dst,
+                                       uint32_t nbytes);
 
 /* Device-side: wait for the oldest in-flight prefetch to complete. */
 __device__ void prefetch_wait(void);
