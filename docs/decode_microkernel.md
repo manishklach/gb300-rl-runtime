@@ -27,6 +27,9 @@ What is still limited:
   separate model-state and query-producer stages, but those stages still
   synthesize/update hidden state instead of consuming model-owned
   activations
+- the model-state stage now uses explicit fixed-shape weights and a
+  smooth residual-style update, but those weights are still deterministic
+  scaffolding rather than trained parameters
 - only one fixed shape is supported
 - only one staged KV block is handled in the current real path
 

@@ -33,7 +33,7 @@ typedef struct {
     RewardRing       reward_ring;
     uint64_t        *d_step_count;
     SampleState     *d_sample_st;
-    float           *d_hidden_buf;
+    ModelStateBuffers model_state;
     __half          *d_query_proj;
     __half          *d_query_buf;
     float           *d_output_buf;
@@ -79,7 +79,7 @@ static int bench_init(BenchContext *ctx, int dev_id, int n_rollouts)
     cudaMalloc(&ctx->d_step_count, sizeof(uint64_t));
     cudaMemset(ctx->d_step_count, 0, sizeof(uint64_t));
     ctx->io_slots = RING_SIZE;
-    if (model_state_init(&ctx->d_hidden_buf, ctx->io_slots) != 0) {
+    if (model_state_init(&ctx->model_state, ctx->io_slots) != 0) {
         fprintf(stderr, "failed to initialize model state\n");
         return -1;
     }
@@ -132,7 +132,7 @@ static void bench_shutdown(BenchContext *ctx)
 
     cudaFree(ctx->d_step_count);
     cudaFree(ctx->d_sample_st);
-    model_state_destroy(ctx->d_hidden_buf);
+    model_state_destroy(&ctx->model_state);
     query_producer_destroy(ctx->d_query_proj);
     cudaFree(ctx->d_query_buf);
     cudaFree(ctx->d_output_buf);
@@ -162,10 +162,10 @@ static int dispatch_decode_step(BenchContext *ctx, uint32_t rollout_id,
 
     Descriptor desc;
     uint32_t slot = step & (ctx->io_slots - 1U);
-    if (model_state_prepare_slot(ctx->d_hidden_buf, ctx->io_slots, rollout_id,
+    if (model_state_prepare_slot(&ctx->model_state, ctx->io_slots, rollout_id,
                                  step, slot) != 0)
         return -1;
-    if (query_producer_prepare_slot(ctx->d_hidden_buf, ctx->d_query_buf,
+    if (query_producer_prepare_slot(ctx->model_state.hidden_buf, ctx->d_query_buf,
                                     ctx->d_query_proj, ctx->io_slots,
                                     slot) != 0)
         return -1;

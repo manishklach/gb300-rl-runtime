@@ -1,6 +1,7 @@
 #pragma once
 
 #include "attention_decode.h"
+#include <cuda_fp16.h>
 #include <stdint.h>
 
 /*
@@ -18,15 +19,22 @@
 
 #define MODEL_STATE_DIM DECODE_FIXED_HEAD_DIM
 
+typedef struct {
+    float  *hidden_buf;
+    __half *input_proj;
+    __half *residual_proj;
+    float  *bias;
+} ModelStateBuffers;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int model_state_init(float **d_hidden_buf, uint32_t slots);
+int model_state_init(ModelStateBuffers *state, uint32_t slots);
 
-void model_state_destroy(float *d_hidden_buf);
+void model_state_destroy(ModelStateBuffers *state);
 
-int model_state_prepare_slot(float *d_hidden_buf,
+int model_state_prepare_slot(ModelStateBuffers *state,
                              uint32_t slots,
                              uint64_t seq_id,
                              uint32_t step,

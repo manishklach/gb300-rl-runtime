@@ -367,11 +367,12 @@ bench_full_pipeline(int n_tokens) {
 
   SampleState *d_sample_st;
   cudaMalloc(&d_sample_st, sizeof(SampleState));
-  float *d_hidden_buf = NULL;
+  ModelStateBuffers model_state;
+  memset(&model_state, 0, sizeof(model_state));
   __half *d_query_proj = NULL;
   __half *d_query_buf;
   float *d_output_buf;
-  assert(model_state_init(&d_hidden_buf, RING_SIZE) == 0);
+  assert(model_state_init(&model_state, RING_SIZE) == 0);
   assert(query_producer_init(&d_query_proj) == 0);
   cudaMalloc(&d_query_buf, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(__half));
   cudaMalloc(&d_output_buf, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(float));
@@ -415,9 +416,9 @@ bench_full_pipeline(int n_tokens) {
       pos = ring_acquire(cmd_ring, 1);
       assert(pos != UINT32_MAX);
     }
-    assert(model_state_prepare_slot(d_hidden_buf, RING_SIZE, 1, (uint32_t)i,
+    assert(model_state_prepare_slot(&model_state, RING_SIZE, 1, (uint32_t)i,
                                     ((uint32_t)i & (RING_SIZE - 1U))) == 0);
-    assert(query_producer_prepare_slot(d_hidden_buf, d_query_buf, d_query_proj,
+    assert(query_producer_prepare_slot(model_state.hidden_buf, d_query_buf, d_query_proj,
                                        RING_SIZE,
                                        ((uint32_t)i & (RING_SIZE - 1U))) == 0);
     Descriptor desc;
@@ -468,7 +469,7 @@ bench_full_pipeline(int n_tokens) {
 
   cudaFree(d_step_count);
   cudaFree(d_sample_st);
-  model_state_destroy(d_hidden_buf);
+  model_state_destroy(&model_state);
   query_producer_destroy(d_query_proj);
   cudaFree(d_query_buf);
   cudaFree(d_output_buf);

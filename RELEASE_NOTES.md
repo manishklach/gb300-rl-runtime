@@ -10,13 +10,17 @@ pipeline.
 - runtime, pipeline benchmarks, and CUDA pipeline tests now execute
   `model_state -> query_producer -> decode` instead of generating hidden
   state inside the projection layer
+- `model_state` now owns explicit fixed-shape projection weights and a
+  bias term for a tiny residual update block instead of a single
+  hand-written scalar mix
 - kept the stage explicitly documented as synthetic scaffolding rather
   than a true transformer prefill/update path
 
 Current limitation:
 
 - model-state preparation is still a deterministic synthetic update rule
-  rather than a real residual stream / MLP / attention stack
+  rather than a real residual stream / MLP / attention stack from a
+  trained model
 - the real decode path remains intentionally narrow: one fixed head
   dimension, one staged KV block, one correctness-first execution path
 
