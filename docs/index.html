@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GB300 RL Runtime</title>
+  <meta name="description" content="A close-to-metal C/CUDA reference runtime for reinforcement learning inference, with persistent GPU workers, lock-free rings, arena-managed KV cache, and hardware-shaped decode experiments.">
+  <style>
+    :root {
+      --bg: #08111d;
+      --panel: rgba(15, 28, 46, 0.82);
+      --panel-strong: #10233b;
+      --line: rgba(160, 196, 255, 0.18);
+      --text: #edf6ff;
+      --muted: #9eb5cb;
+      --accent: #6ae3ff;
+      --accent-2: #8fffb6;
+      --warn: #ffd27d;
+      --shadow: 0 30px 80px rgba(0, 0, 0, 0.35);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(106, 227, 255, 0.18), transparent 28%),
+        radial-gradient(circle at top right, rgba(143, 255, 182, 0.14), transparent 26%),
+        linear-gradient(180deg, #091423 0%, #08111d 48%, #07101a 100%);
+      line-height: 1.6;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .shell {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+    }
+
+    .hero {
+      padding: 40px 0 24px;
+    }
+
+    .hero-card {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(18, 35, 58, 0.92), rgba(10, 20, 34, 0.92));
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .hero-top {
+      display: grid;
+      grid-template-columns: 1.5fr 0.9fr;
+      gap: 24px;
+      padding: 36px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      gap: 10px;
+      align-items: center;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      font-size: 12px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      line-height: 1.08;
+    }
+
+    h1 {
+      margin-top: 18px;
+      font-size: clamp(2.5rem, 5vw, 4.8rem);
+      letter-spacing: -0.04em;
+    }
+
+    h2 {
+      font-size: clamp(1.6rem, 2.5vw, 2.3rem);
+      letter-spacing: -0.03em;
+      margin-bottom: 14px;
+    }
+
+    h3 {
+      font-size: 1.1rem;
+      margin-bottom: 8px;
+    }
+
+    .hero-copy p,
+    .section-copy {
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+      max-width: 68ch;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 28px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px 18px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.04);
+      font-weight: 600;
+    }
+
+    .button.primary {
+      color: #04111a;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      border-color: transparent;
+    }
+
+    .hero-stats {
+      display: grid;
+      gap: 12px;
+    }
+
+    .stat {
+      padding: 18px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--line);
+    }
+
+    .stat-value {
+      display: block;
+      font-size: 1.9rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .stat-label {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .hero-bottom {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+      border-top: 1px solid var(--line);
+      background: rgba(0, 0, 0, 0.08);
+    }
+
+    .hero-bottom div {
+      padding: 18px 22px;
+      border-right: 1px solid var(--line);
+    }
+
+    .hero-bottom div:last-child {
+      border-right: none;
+    }
+
+    .hero-bottom strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .hero-bottom span {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    main {
+      padding-bottom: 48px;
+    }
+
+    section {
+      margin-top: 26px;
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .section-head {
+      padding: 28px 30px 8px;
+    }
+
+    .grid {
+      display: grid;
+      gap: 18px;
+      padding: 0 30px 30px;
+    }
+
+    .grid-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .grid-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 20px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .pill {
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 0.9rem;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .status-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 0.96rem;
+    }
+
+    .status-table th,
+    .status-table td {
+      border-top: 1px solid var(--line);
+      padding: 14px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .status-table th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.88rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 0.84rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    .status.real {
+      background: rgba(143, 255, 182, 0.1);
+      color: var(--accent-2);
+    }
+
+    .status.partial {
+      background: rgba(255, 210, 125, 0.12);
+      color: var(--warn);
+    }
+
+    .status.stub {
+      background: rgba(106, 227, 255, 0.1);
+      color: var(--accent);
+    }
+
+    .timeline {
+      display: grid;
+      gap: 14px;
+    }
+
+    .timeline-item {
+      padding: 18px 20px;
+      border-left: 3px solid var(--accent);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .timeline-item strong {
+      display: inline-block;
+      margin-bottom: 6px;
+    }
+
+    code {
+      font-family: Consolas, "SFMono-Regular", Menlo, Monaco, monospace;
+      font-size: 0.92em;
+      color: #d7fbff;
+    }
+
+    ul {
+      margin: 10px 0 0;
+      padding-left: 20px;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    .footer {
+      padding: 18px 0 38px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    @media (max-width: 980px) {
+      .hero-top,
+      .grid-3,
+      .grid-2,
+      .hero-bottom {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-bottom div {
+        border-right: none;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .hero-bottom div:last-child {
+        border-bottom: none;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .hero-top,
+      .section-head,
+      .grid {
+        padding-left: 18px;
+        padding-right: 18px;
+      }
+
+      .hero-top {
+        padding-top: 24px;
+        padding-bottom: 24px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <div class="hero-card">
+        <div class="hero-top">
+          <div class="hero-copy">
+            <span class="eyebrow">GB300 RL Runtime · C/CUDA · Hardware-Shaped Inference</span>
+            <h1>Persistent workers, lock-free rings, batched descriptor windows, and a growing decode pipeline.</h1>
+            <p>
+              <code>gb300-rl-runtime</code> is a close-to-metal reference runtime for reinforcement-learning inference.
+              It focuses on the control-path and data-path mechanics that matter when the target is low-latency decode:
+              coherent rings, arena-managed KV, GPU-resident workers, explicit queue windows, and increasingly hardware-shaped decode kernels.
+            </p>
+            <div class="hero-actions">
+              <a class="button primary" href="https://github.com/manishklach/gb300-rl-runtime">View Repository</a>
+              <a class="button" href="architecture.md">Architecture</a>
+              <a class="button" href="decode_microkernel.md">Decode Microkernel</a>
+              <a class="button" href="v0.2.2-roadmap.md">Roadmap</a>
+            </div>
+          </div>
+          <div class="hero-stats">
+            <div class="stat">
+              <span class="stat-value">v0.2.x</span>
+              <span class="stat-label">Correctness, stabilization, and hardware-close decode bring-up</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value">1 warp / SM</span>
+              <span class="stat-label">Persistent decode worker execution model today</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value">Fixed128</span>
+              <span class="stat-label">First real attention math path with explicit model-state and query projection</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value">master/docs</span>
+              <span class="stat-label">GitHub Pages-ready static site with no build step required</span>
+            </div>
+          </div>
+        </div>
+        <div class="hero-bottom">
+          <div>
+            <strong>What It Optimizes For</strong>
+            <span>Per-token hot-path discipline: no scheduler wakeups, no per-token launches, no surprise allocation.</span>
+          </div>
+          <div>
+            <strong>Current Host Story</strong>
+            <span>Linux/POSIX-oriented runtime with CPU smoke coverage and CUDA paths for Ampere+ GPUs.</span>
+          </div>
+          <div>
+            <strong>Current Decode Story</strong>
+            <span>Real fixed-shape QK / softmax / V math, warp-cooperative execution, grouped descriptor windows.</span>
+          </div>
+          <div>
+            <strong>Current Pipeline Story</strong>
+            <span>Queue snapshots, credit headroom, decode batch windows, and batch-driven decode admission.</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section>
+        <div class="section-head">
+          <h2>Why This Repo Exists</h2>
+          <p class="section-copy">
+            This project is less about model quality and more about runtime shape. It explores what an RL inference fast-path looks like when the interesting problems are ring semantics, device-visible scheduling, pre-allocated KV, and decode flow control rather than framework breadth.
+          </p>
+        </div>
+        <div class="grid grid-3">
+          <article class="card">
+            <h3>Hot Path Discipline</h3>
+            <p>The repo treats the per-token loop as a systems problem. Rings, arena allocation, completion flow, and persistent workers are all designed around keeping the decode hot path predictable.</p>
+            <div class="pill-row">
+              <span class="pill">Lock-free SPSC rings</span>
+              <span class="pill">Persistent GPU workers</span>
+              <span class="pill">Wrapper-clean reporting</span>
+            </div>
+          </article>
+          <article class="card">
+            <h3>Hardware-Shaped Iteration</h3>
+            <p>The decode path is intentionally narrow so it can get real before it gets broad: fixed head dimension, explicit KV layout, shared-memory staging, warp-cooperative score/softmax/output work.</p>
+            <div class="pill-row">
+              <span class="pill">Fixed128 attention</span>
+              <span class="pill">Warp cooperation</span>
+              <span class="pill">cp.async scaffolding</span>
+            </div>
+          </article>
+          <article class="card">
+            <h3>Honest Benchmarking</h3>
+            <p>The repo has steadily tightened its claims: queue correctness is tested, overflow is counted, shutdown is synchronized, and “real” versus “scaffold” paths are documented instead of blurred together.</p>
+            <div class="pill-row">
+              <span class="pill">Correctness tests</span>
+              <span class="pill">Release notes</span>
+              <span class="pill">Status table</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>System Snapshot</h2>
+          <p class="section-copy">
+            The runtime is built from a small set of explicit primitives. The control plane lives in coherent or pinned memory. The device side polls, prefetches, decodes, and completes. Recent work has added decode queue windows and grouped descriptor submission on the host side.
+          </p>
+        </div>
+        <div class="grid grid-2">
+          <article class="card">
+            <h3>Host Control Plane</h3>
+            <ul>
+              <li><code>CommandRing</code> publishes decode descriptors from CPU to GPU.</li>
+              <li><code>RolloutPipeline</code> tracks rollout movement across free, prefill, decode, reward, trajectory, and done queues.</li>
+              <li><code>PipelineSnapshot</code> exposes queue occupancy, credit headroom, and suggested batch windows.</li>
+              <li><code>DecodeDispatchBatch</code> groups descriptor windows and commits them to the ring in one shot.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>GPU Data Path</h3>
+            <ul>
+              <li><code>decode_worker</code> runs as a persistent kernel, one warp per SM today.</li>
+              <li><code>model_state</code> produces a deterministic residual-style hidden-state update.</li>
+              <li><code>query_producer</code> projects hidden state into explicit decode query buffers.</li>
+              <li><code>attention_decode_step_fixed128</code> executes real QK / softmax / V math on one fixed path.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Implementation Status</h2>
+          <p class="section-copy">
+            The project draws a sharp line between what is real, what is partial, and what is still scaffolding. That line matters because the repo is intended to be trusted as a systems prototype, not just a benchmark shell.
+          </p>
+        </div>
+        <div class="grid">
+          <table class="status-table">
+            <thead>
+              <tr>
+                <th>Area</th>
+                <th>Status</th>
+                <th>What It Actually Means</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Command and Completion Rings</td>
+                <td><span class="status real">Real</span></td>
+                <td>SPSC semantics are corrected and tested, including wraparound, consumer progress visibility, and no permanent-full failure mode.</td>
+              </tr>
+              <tr>
+                <td>KV Arena and Host Runtime Plumbing</td>
+                <td><span class="status real">Real</span></td>
+                <td>Pre-allocated arena, runtime init/shutdown, persistent worker launch, and explicit query/output buffer plumbing are present.</td>
+              </tr>
+              <tr>
+                <td>Fixed128 Decode Path</td>
+                <td><span class="status partial">Partial</span></td>
+                <td>Real attention math exists for one fixed path. The kernel is warp-cooperative and the score pass now uses 8-lane row groups, but it remains single-warp and single-block.</td>
+              </tr>
+              <tr>
+                <td>Model-State and Query Stages</td>
+                <td><span class="status partial">Partial</span></td>
+                <td>The runtime now has explicit <code>model_state -&gt; query_producer -&gt; decode</code> stages, but they still use deterministic scaffolding rather than trained model activations.</td>
+              </tr>
+              <tr>
+                <td>Pipeline Windows and Decode Admission</td>
+                <td><span class="status real">Real</span></td>
+                <td>Decode queue occupancy, stage credits, batch windows, batch-driven decode admission, and grouped descriptor submission are all wired together in the benchmark path.</td>
+              </tr>
+              <tr>
+                <td>Reward / Full RL Semantics</td>
+                <td><span class="status stub">Stub</span></td>
+                <td>Reward scoring and broader model semantics remain mock or narrow; the repo is still primarily a runtime/control-path prototype.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Recent Milestones</h2>
+          <p class="section-copy">
+            The current site reflects the repo after a long stabilization and bring-up pass, including correctness fixes, benchmark honesty updates, decode-path scaffolding, and control-plane pipelining work.
+          </p>
+        </div>
+        <div class="grid grid-2">
+          <div class="timeline">
+            <div class="timeline-item">
+              <strong>v0.2.1</strong>
+              <div>Queue correctness, overflow protection, shutdown synchronization, wrapper-clean reporting, and Linux/POSIX portability notes.</div>
+            </div>
+            <div class="timeline-item">
+              <strong>v0.2.2-b to v0.2.2-e</strong>
+              <div>Real fixed128 decode math, explicit query/output plumbing, explicit model-state and query stages, then warp-cooperative decode execution.</div>
+            </div>
+            <div class="timeline-item">
+              <strong>v0.2.2-f and beyond</strong>
+              <div>Prefetch pipeline helpers, queue snapshots, credit headroom, decode batch windows, batch-driven decode admission, and grouped descriptor windows.</div>
+            </div>
+          </div>
+          <article class="card">
+            <h3>Current Priorities</h3>
+            <ul>
+              <li>Move from host-visible batch contracts toward GPU-visible decode batch semantics.</li>
+              <li>Broaden the fixed128 decode path from one staged KV block to multiple blocks per step.</li>
+              <li>Replace deterministic model-state scaffolding with a more realistic activation source.</li>
+              <li>Keep strengthening tests and docs so low-level changes stay honest and reviewable.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Read the Repo</h2>
+          <p class="section-copy">
+            If you want the deeper technical story, these documents and directories are the fastest way into the codebase.
+          </p>
+        </div>
+        <div class="grid grid-3">
+          <article class="card">
+            <h3>Primary Docs</h3>
+            <ul>
+              <li><a href="architecture.md">Architecture</a></li>
+              <li><a href="decode_microkernel.md">Decode Microkernel</a></li>
+              <li><a href="gpu_scheduler.md">GPU Scheduler</a></li>
+              <li><a href="hotpath.md">Hot Path Classification</a></li>
+              <li><a href="v0.2.2-roadmap.md">v0.2.2 Roadmap</a></li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Important Source Areas</h3>
+            <ul>
+              <li><code>include/</code> for rings, descriptors, pipeline, metrics, and decode interfaces</li>
+              <li><code>src/</code> for host runtime, pipeline logic, rollout slab, and descriptor batching</li>
+              <li><code>cu/</code> for worker, prefetch, decode, query production, and model-state stages</li>
+              <li><code>bench/</code> for pipeline, trace, decode, and scheduler benchmarks</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Repo Links</h3>
+            <ul>
+              <li><a href="https://github.com/manishklach/gb300-rl-runtime">GitHub repository</a></li>
+              <li><a href="https://github.com/manishklach/gb300-rl-runtime/blob/master/README.md">README</a></li>
+              <li><a href="https://github.com/manishklach/gb300-rl-runtime/blob/master/RELEASE_NOTES.md">Release notes</a></li>
+              <li><a href="https://github.com/manishklach/gb300-rl-runtime/tree/master/bench">Benchmarks</a></li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>What This Is Not</h2>
+          <p class="section-copy">
+            This repo is not pretending to be a production LLM serving framework today. It is narrower and, in some ways, more useful because of that.
+          </p>
+        </div>
+        <div class="grid grid-2">
+          <article class="card">
+            <h3>Not a Full Serving Stack</h3>
+            <p>It does not yet compete with broad systems like vLLM, TensorRT-LLM, or SGLang on feature completeness, model support, or operational polish.</p>
+          </article>
+          <article class="card">
+            <h3>A Reference Fast Path</h3>
+            <p>It is a detailed reference for how a low-level RL inference runtime can be decomposed into queues, credit windows, descriptor windows, resident workers, and a gradually more real decode path.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <div class="footer">
+      Built directly from the repository state in <code>master/docs</code> for GitHub Pages.
+    </div>
+  </div>
+</body>
+</html>
