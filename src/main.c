@@ -3,6 +3,7 @@
 #include "completion.h"
 #include "numa.h"
 #include "attention_decode.h"
+#include "model_state.h"
 #include "query_producer.h"
 #include "sample.h"
 #include <stdio.h>
@@ -71,7 +72,11 @@ runtime_init(Runtime *rt, int dev_id, size_t arena_size, size_t block_size) {
   cudaMalloc(&rt->d_step_count, sizeof(uint64_t));
   cudaMemset(rt->d_step_count, 0, sizeof(uint64_t));
   rt->io_slots = RING_SIZE;
-  if (query_producer_init(&rt->d_hidden_buf, &rt->d_query_proj, rt->io_slots) != 0) {
+  if (model_state_init(&rt->d_hidden_buf, rt->io_slots) != 0) {
+    fprintf(stderr, "failed to initialize model state\n");
+    return -1;
+  }
+  if (query_producer_init(&rt->d_query_proj) != 0) {
     fprintf(stderr, "failed to initialize query producer\n");
     return -1;
   }
@@ -109,9 +114,14 @@ runtime_dispatch(Runtime *rt, uint64_t seq_id, int n_steps, int kv_blocks) {
 
     Descriptor desc;
     uint32_t slot = ((uint32_t)i) & (rt->io_slots - 1U);
+    if (model_state_prepare_slot(rt->d_hidden_buf, rt->io_slots, seq_id,
+                                 (uint32_t)i, slot) != 0) {
+      fprintf(stderr, "model state update failed at step %d\n", i);
+      return -1;
+    }
     if (query_producer_prepare_slot(rt->d_hidden_buf, rt->d_query_buf,
                                     rt->d_query_proj, rt->io_slots,
-                                    seq_id, (uint32_t)i, slot) != 0) {
+                                    slot) != 0) {
       fprintf(stderr, "query producer failed at step %d\n", i);
       return -1;
     }
@@ -162,7 +172,8 @@ runtime_shutdown(Runtime *rt) {
 
   cudaFree(rt->d_step_count);
   cudaFree(rt->d_sample_st);
-  query_producer_destroy(rt->d_hidden_buf, rt->d_query_proj);
+  model_state_destroy(rt->d_hidden_buf);
+  query_producer_destroy(rt->d_query_proj);
   cudaFree(rt->d_query_buf);
   cudaFree(rt->d_output_buf);
   ring_destroy(rt->cmd_ring);

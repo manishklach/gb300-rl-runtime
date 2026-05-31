@@ -1,5 +1,25 @@
 # Release Notes
 
+## v0.2.2-d
+
+This checkpoint separates synthetic activation preparation from query
+projection so the decode path more closely resembles a real inference
+pipeline.
+
+- added `include/model_state.h` and `cu/model_state.cu`
+- runtime, pipeline benchmarks, and CUDA pipeline tests now execute
+  `model_state -> query_producer -> decode` instead of generating hidden
+  state inside the projection layer
+- kept the stage explicitly documented as synthetic scaffolding rather
+  than a true transformer prefill/update path
+
+Current limitation:
+
+- model-state preparation is still a deterministic synthetic update rule
+  rather than a real residual stream / MLP / attention stack
+- the real decode path remains intentionally narrow: one fixed head
+  dimension, one staged KV block, one correctness-first execution path
+
 ## v0.2.2-c
 
 This checkpoint removes the last direct host-filled query staging from
@@ -15,9 +35,9 @@ producer stage.
 
 Current limitation:
 
-- query production is now an explicit runtime stage, but it is still a
-  deterministic synthetic hidden-state plus projection scaffold rather
-  than real transformer activations
+- query production is now an explicit runtime stage, but it still sits
+  on top of synthetic hidden-state scaffolding rather than real
+  transformer activations
 - the real decode path is still intentionally narrow: one fixed head
   dimension, one staged KV block, one correctness-first execution path
 

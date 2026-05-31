@@ -20,6 +20,7 @@
 #include "kv_prefix.h"
 #include "request.h"
 #include "attention_decode.h"
+#include "model_state.h"
 #include "query_producer.h"
 #include "warp_broadcast.cuh"
 #include <time.h>
@@ -370,7 +371,8 @@ bench_full_pipeline(int n_tokens) {
   __half *d_query_proj = NULL;
   __half *d_query_buf;
   float *d_output_buf;
-  assert(query_producer_init(&d_hidden_buf, &d_query_proj, RING_SIZE) == 0);
+  assert(model_state_init(&d_hidden_buf, RING_SIZE) == 0);
+  assert(query_producer_init(&d_query_proj) == 0);
   cudaMalloc(&d_query_buf, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(__half));
   cudaMalloc(&d_output_buf, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(float));
   cudaMemset(d_output_buf, 0, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(float));
@@ -413,8 +415,10 @@ bench_full_pipeline(int n_tokens) {
       pos = ring_acquire(cmd_ring, 1);
       assert(pos != UINT32_MAX);
     }
+    assert(model_state_prepare_slot(d_hidden_buf, RING_SIZE, 1, (uint32_t)i,
+                                    ((uint32_t)i & (RING_SIZE - 1U))) == 0);
     assert(query_producer_prepare_slot(d_hidden_buf, d_query_buf, d_query_proj,
-                                       RING_SIZE, 1, (uint32_t)i,
+                                       RING_SIZE,
                                        ((uint32_t)i & (RING_SIZE - 1U))) == 0);
     Descriptor desc;
     desc.seq_id            = 1;
@@ -464,7 +468,8 @@ bench_full_pipeline(int n_tokens) {
 
   cudaFree(d_step_count);
   cudaFree(d_sample_st);
-  query_producer_destroy(d_hidden_buf, d_query_proj);
+  model_state_destroy(d_hidden_buf);
+  query_producer_destroy(d_query_proj);
   cudaFree(d_query_buf);
   cudaFree(d_output_buf);
   ring_destroy(cmd_ring);

@@ -7,15 +7,13 @@
 /*
  * v0.2.2-c query producer scaffold.
  *
- * This module provides a tiny explicit "model-like" query production
- * stage so the runtime path no longer host-fills decode queries
- * directly.  It is intentionally narrow:
- *   - one hidden-state size
- *   - one fixed projection matrix
- *   - deterministic synthetic hidden-state initialization/update
+ * This module projects a prepared hidden-state row into the fixed128
+ * decode query buffer.  The hidden-state preparation/update stage lives
+ * in `model_state.*`, so this layer is just:
+ *   hidden state -> fixed projection -> query buffer
  *
- * The result is still not a full model, but the runtime now has an
- * explicit producer stage between control metadata and decode queries.
+ * The result is still not a full model, but the runtime now has a
+ * cleaner separation between state preparation and query projection.
  */
 
 #define QUERY_MODEL_DIM DECODE_FIXED_HEAD_DIM
@@ -24,19 +22,14 @@
 extern "C" {
 #endif
 
-int query_producer_init(float **d_hidden_buf,
-                        __half **d_proj_buf,
-                        uint32_t slots);
+int query_producer_init(__half **d_proj_buf);
 
-void query_producer_destroy(float *d_hidden_buf,
-                            __half *d_proj_buf);
+void query_producer_destroy(__half *d_proj_buf);
 
-int query_producer_prepare_slot(float *d_hidden_buf,
+int query_producer_prepare_slot(const float *d_hidden_buf,
                                 __half *d_query_buf,
                                 const __half *d_proj_buf,
                                 uint32_t slots,
-                                uint64_t seq_id,
-                                uint32_t step,
                                 uint32_t slot);
 
 #ifdef __cplusplus
