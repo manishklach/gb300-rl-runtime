@@ -14,6 +14,9 @@ path, both inside the kernel and in the host control plane.
   `include/pipeline.h` and `src/pipeline.c`
 - expanded the CPU smoke target to compile pipeline/rollout code too,
   which also surfaced and fixed the stale `rollout_t` size assertion
+- pipeline benchmarks now use decode credits plus batch-window helpers
+  to admit and drain decode work in small batches instead of dispatching
+  every rollout immediately after enqueue
 - pipeline benchmarks now report or trace decode queue occupancy,
   credit headroom, and a suggested decode batch window
 

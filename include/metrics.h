@@ -15,6 +15,9 @@ typedef struct {
     _Alignas(64) uint64_t hotpath_mallocs_caught;
     _Alignas(64) uint64_t rollouts_completed;
     _Alignas(64) uint64_t pipeline_overflow;
+    _Alignas(64) uint64_t decode_batches;
+    _Alignas(64) uint64_t decode_rollouts_scheduled;
+    _Alignas(64) uint64_t decode_batch_peak;
 } RuntimeMetrics;
 
 #define METRIC_INC(m, x) __atomic_add_fetch(&(m)->x, 1, __ATOMIC_RELAXED)

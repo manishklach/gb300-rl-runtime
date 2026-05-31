@@ -42,6 +42,8 @@ typedef struct {
     int              dev_id;
 } BenchContext;
 
+#define DECODE_BATCH_LIMIT 32U
+
 static void trace_pipeline_window(const RolloutPipeline *pipeline, TraceRing *trace,
                                   uint32_t max_decode_batch)
 {
@@ -209,6 +211,92 @@ static int drain_completions(BenchContext *ctx)
     return n;
 }
 
+static void note_decode_batch_metrics(RuntimeMetrics *metrics, uint32_t batch_size)
+{
+    METRIC_INC(metrics, decode_batches);
+    __atomic_add_fetch(&metrics->decode_rollouts_scheduled, batch_size, __ATOMIC_RELAXED);
+    uint64_t peak = METRIC_READ(metrics, decode_batch_peak);
+    while (peak < batch_size &&
+           !__atomic_compare_exchange_n(&metrics->decode_batch_peak, &peak,
+                                        batch_size, 0, __ATOMIC_RELAXED,
+                                        __ATOMIC_RELAXED)) {
+    }
+}
+
+static void finish_rollout(BenchContext *ctx, uint32_t rid, uint32_t tokens_per_rollout)
+{
+    rollout_t *ro = rollout_get(&ctx->pipeline.slab, rid);
+    if (!ro)
+        return;
+
+    rollout_transition(ro, ROLL_DECODING, ROLL_REWARD_PENDING);
+    pipeline_push(&ctx->pipeline, Q_REWARD, rid);
+
+    RewardDesc rd;
+    rd.rollout_id     = rid;
+    rd.token_start    = 0;
+    rd.token_count    = tokens_per_rollout;
+    rd.reward_model_id = 0;
+    rd.reward         = reward_score_mock(NULL, tokens_per_rollout);
+    rd.flags          = 0;
+    reward_push(&ctx->reward_ring, &rd);
+    METRIC_INC(&ctx->metrics, reward_handoffs);
+    trace_push(&ctx->trace, TRACE_REWARD_POSTED, rid, tokens_per_rollout);
+    trace_push(&ctx->trace, TRACE_REWARD_SCORED, rid, tokens_per_rollout);
+
+    rollout_transition(ro, ROLL_REWARD_PENDING, ROLL_TRAJECTORY_READY);
+    pipeline_push(&ctx->pipeline, Q_TRAJECTORY, rid);
+
+    rollout_transition(ro, ROLL_TRAJECTORY_READY, ROLL_DONE);
+    pipeline_push(&ctx->pipeline, Q_DONE, rid);
+
+    METRIC_INC(&ctx->metrics, rollouts_completed);
+    trace_push(&ctx->trace, TRACE_TRAJECTORY_DONE, rid, tokens_per_rollout);
+    rollout_free(&ctx->pipeline.slab, rid);
+    trace_push(&ctx->trace, TRACE_ROLLOUT_FREE, rid, 0);
+}
+
+static int schedule_decode_batches(BenchContext *ctx, uint32_t batch_max,
+                                   uint32_t tokens_per_rollout)
+{
+    uint32_t batch = pipeline_stage_target_batch(&ctx->pipeline, Q_DECODE, batch_max);
+    uint32_t rollout_ids[DECODE_BATCH_LIMIT];
+    uint32_t launched = 0;
+
+    if (batch > DECODE_BATCH_LIMIT)
+        batch = DECODE_BATCH_LIMIT;
+    if (batch == 0)
+        return 0;
+
+    for (uint32_t i = 0; i < batch; i++) {
+        if (pipeline_schedule(&ctx->pipeline, Q_DECODE, &rollout_ids[launched]) != 0)
+            break;
+        launched++;
+    }
+    if (launched == 0)
+        return 0;
+
+    note_decode_batch_metrics(&ctx->metrics, launched);
+    trace_push(&ctx->trace, TRACE_DECODE_BATCH, launched, tokens_per_rollout);
+
+    for (uint32_t i = 0; i < launched; i++) {
+        const uint32_t rid = rollout_ids[i];
+        int kv_block = (int)(rid % 128U);
+        for (int t = 0; t < (int)tokens_per_rollout; t++) {
+            if (dispatch_decode_step(ctx, rid, (uint32_t)t, (uint32_t)kv_block,
+                                     tokens_per_rollout) != 0) {
+                METRIC_INC(&ctx->metrics, pipeline_overflow);
+                break;
+            }
+            kv_block = (kv_block + 1) % 128;
+        }
+        finish_rollout(ctx, rid, tokens_per_rollout);
+    }
+
+    pipeline_release(&ctx->pipeline, Q_DECODE, launched);
+    return (int)launched;
+}
+
 int main(int argc, char **argv)
 {
     int n_rollouts = 1000;
@@ -256,43 +344,29 @@ int main(int argc, char **argv)
         rollout_transition(ro, ROLL_FREE, ROLL_PREFILL_READY);
         pipeline_push(&ctx.pipeline, Q_PREFILL, rid);
 
+        int decode_admitted = 0;
         rollout_transition(ro, ROLL_PREFILL_READY, ROLL_DECODING);
-        pipeline_push(&ctx.pipeline, Q_DECODE, rid);
-
-        int kv_block = r % 128;
-        for (int t = 0; t < tokens_per_rollout; t++) {
-            if (dispatch_decode_step(&ctx, rid, t, kv_block, tokens_per_rollout) != 0) {
+        while (!decode_admitted) {
+            if (pipeline_try_push(&ctx.pipeline, Q_DECODE, rid) == 0) {
+                decode_admitted = 1;
+                break;
+            }
+            if (schedule_decode_batches(&ctx, DECODE_BATCH_LIMIT, (uint32_t)tokens_per_rollout) == 0) {
                 METRIC_INC(&ctx.metrics, pipeline_overflow);
                 break;
             }
-            kv_block = (kv_block + 1) % 128;
         }
-
-        rollout_transition(ro, ROLL_DECODING, ROLL_REWARD_PENDING);
-        pipeline_push(&ctx.pipeline, Q_REWARD, rid);
-
-        RewardDesc rd;
-        rd.rollout_id     = rid;
-        rd.token_start    = 0;
-        rd.token_count    = tokens_per_rollout;
-        rd.reward_model_id = 0;
-        rd.reward         = reward_score_mock(NULL, tokens_per_rollout);
-        rd.flags          = 0;
-        reward_push(&ctx.reward_ring, &rd);
-        trace_push(&ctx.trace, TRACE_REWARD_POSTED, rid, tokens_per_rollout);
-        trace_push(&ctx.trace, TRACE_REWARD_SCORED, rid, tokens_per_rollout);
-
-        rollout_transition(ro, ROLL_REWARD_PENDING, ROLL_TRAJECTORY_READY);
-        pipeline_push(&ctx.pipeline, Q_TRAJECTORY, rid);
-
-        rollout_transition(ro, ROLL_TRAJECTORY_READY, ROLL_DONE);
-        pipeline_push(&ctx.pipeline, Q_DONE, rid);
-
-        METRIC_INC(&ctx.metrics, rollouts_completed);
-        trace_push(&ctx.trace, TRACE_TRAJECTORY_DONE, rid, tokens_per_rollout);
-        rollout_free(&ctx.pipeline.slab, rid);
-        trace_push(&ctx.trace, TRACE_ROLLOUT_FREE, rid, 0);
+        if (!decode_admitted) {
+            rollout_free(&ctx.pipeline.slab, rid);
+            trace_push(&ctx.trace, TRACE_ROLLOUT_FREE, rid, 0);
+            continue;
+        }
+        if ((uint32_t)((r + 1) % DECODE_BATCH_LIMIT) == 0U)
+            schedule_decode_batches(&ctx, DECODE_BATCH_LIMIT, (uint32_t)tokens_per_rollout);
     }
+
+    while (pipeline_occupancy(&ctx.pipeline, Q_DECODE) > 0)
+        schedule_decode_batches(&ctx, DECODE_BATCH_LIMIT, (uint32_t)tokens_per_rollout);
 
     uint64_t expected_completions = METRIC_READ(&ctx.metrics, descriptors_posted);
     uint64_t comps = 0;

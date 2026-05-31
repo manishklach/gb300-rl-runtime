@@ -28,6 +28,9 @@ metrics_fprintf(FILE *f, RuntimeMetrics *m, uint64_t wall_ns,
     uint64_t hp_malloc = METRIC_READ(m, hotpath_mallocs_caught);
     uint64_t done      = METRIC_READ(m, rollouts_completed);
     uint64_t overflow  = METRIC_READ(m, pipeline_overflow);
+    uint64_t batches   = METRIC_READ(m, decode_batches);
+    uint64_t sched     = METRIC_READ(m, decode_rollouts_scheduled);
+    uint64_t peak      = METRIC_READ(m, decode_batch_peak);
 
     double wall_s = wall_ns / 1.0e9;
     double tok_s  = n_tokens / wall_s;
@@ -50,6 +53,9 @@ metrics_fprintf(FILE *f, RuntimeMetrics *m, uint64_t wall_ns,
     fprintf(f, "  GPU idle loops:         %lu\n", (unsigned long)idle);
     fprintf(f, "  Rollouts completed:     %lu\n", (unsigned long)done);
     fprintf(f, "  Pipeline overflows:     %lu\n", (unsigned long)overflow);
+    fprintf(f, "  Decode batches:         %lu\n", (unsigned long)batches);
+    fprintf(f, "  Decode rollouts sched.: %lu\n", (unsigned long)sched);
+    fprintf(f, "  Decode batch peak:      %lu\n", (unsigned long)peak);
     fprintf(f, "  Wrapper-tracked mallocs:%lu ", (unsigned long)hp_malloc);
     if (hp_malloc == 0)
         fprintf(f, "(wrapper-clean)\n");
