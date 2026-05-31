@@ -2,6 +2,7 @@
 #include "arena.h"
 #include "completion.h"
 #include "numa.h"
+#include "sample.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,9 @@ typedef struct {
   int    num_sms;
   int    dev_id;
 } Runtime;
+
+__global__ void decode_worker(CommandRing*, KVArena*, CompletionRing*,
+                              SampleState*, uint64_t*);
 
 static int
 get_sm_count(int dev_id) {
@@ -121,13 +125,17 @@ runtime_shutdown(Runtime *rt) {
   Descriptor sentinel;
   memset(&sentinel, 0, sizeof(sentinel));
   sentinel.seq_id = UINT64_MAX;
-  for (int i = 0; i < rt->num_sms; i++) {
+  int sent = 0;
+  while (sent < rt->num_sms) {
     uint32_t pos = ring_acquire(rt->cmd_ring, 1);
-    if (pos != UINT32_MAX) {
-      rt->cmd_ring->slots[pos] = sentinel;
-      ring_commit(rt->cmd_ring, 1);
-    }
+    if (pos == UINT32_MAX)
+      continue;
+    rt->cmd_ring->slots[pos] = sentinel;
+    ring_commit(rt->cmd_ring, 1);
+    sent++;
   }
+
+  cudaDeviceSynchronize();
 
   cudaFree(rt->d_step_count);
   cudaFree(rt->d_sample_st);
@@ -167,7 +175,7 @@ main(int argc, char **argv) {
     rt.d_sample_st, rt.d_step_count);
 
   /* dispatch work */
-  uint64_t start_ns, end_ns;
+  float ms;
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
   cudaEventCreate(&stop);
@@ -183,8 +191,7 @@ main(int argc, char **argv) {
 
   cudaEventRecord(stop);
   cudaEventSynchronize(stop);
-  cudaEventElapsedTime(&start_ns, start, stop); /* actually ms */
-  float ms = start_ns; /* cudaEventElapsedTime returns ms */
+  cudaEventElapsedTime(&ms, start, stop);
 
   uint64_t steps;
   cudaMemcpy(&steps, rt.d_step_count, sizeof(steps), cudaMemcpyDeviceToHost);

@@ -6,7 +6,8 @@
 #define MAX_KV_BLOCKS_PER_STEP 64
 #define DESCRIPTOR_ALIGN     128
 
-typedef struct __attribute__((packed)) {
+#pragma pack(push, 1)
+typedef struct {
   uint64_t  seq_id;              /* global trajectory ID */
   uint32_t  kv_block_offset;     /* slab index in KV arena */
   uint16_t  num_kv_blocks;       /* contiguous blocks for this step */
@@ -15,5 +16,6 @@ typedef struct __attribute__((packed)) {
   uint32_t  output_token_offset; /* slot in completion ring */
   uint64_t  reward_cookie;       /* async reward completion tag */
 } Descriptor;
+#pragma pack(pop)
 
-_Static_assert(sizeof(Descriptor) == 24, "Descriptor must be 24 bytes");
+_Static_assert(sizeof(Descriptor) == 28, "Descriptor must be 28 bytes");

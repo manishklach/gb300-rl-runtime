@@ -5,12 +5,34 @@ inference at GB300 NVL72 scale.  No page faults, no `malloc`/`free`,
 no **per-token** CUDA kernel launches, no CPU scheduler wakeups in the
 per-token hot path.  Persistent GPU workers are launched once at init.
 
+## v0.2.1: Correctness and Benchmark Honesty
+
+This release is a stabilization pass focused on queue correctness,
+worker shutdown safety, overflow handling, and more honest benchmark
+reporting.
+
+- SPSC command-ring accounting now uses explicit producer-tail and
+  consumer-head ownership.
+- Persistent workers now use `__shfl_sync` for warp value broadcast and
+  reserve `__sync_warp` for synchronization only.
+- Shutdown paths wait for persistent kernels to exit before freeing
+  host/device resources.
+- Completion and done rings now detect full conditions, count overflow
+  attempts, and apply backpressure instead of silently overwriting data.
+- Hot-path guard output now reports `wrapper-clean` rather than a global
+  `CLEAN` claim.
+
 ## Portable, not GB300-only
 
 The code targets GB300 because that's the interesting scale, but it
-runs on **any GPU with compute capability 8.0+** (Ampere or newer).
-The test bench validates the full pipeline on a single GPU with no
-special hardware.
+runs CUDA kernels on **any GPU with compute capability 8.0+**
+(Ampere or newer).
+
+The full host runtime is still **Linux/POSIX-oriented** today.  It uses
+APIs such as `mmap`, `MAP_HUGETLB`, `mbind`, `clock_gettime`, `getopt`,
+and POSIX-style filesystem/device conventions in a few tests and
+benchmarks.  `make smoke` provides CPU-only queue correctness checks on
+supported Linux environments without requiring a GPU.
 
 What you'd change for a non-GB300 system:
 
@@ -22,8 +44,9 @@ What you'd change for a non-GB300 system:
 | `-arch=sm_90a` (Blackwell) | Makefile now uses multi-arch gencode: sm_80 (Ampere) through sm_90a (Blackwell) |
 
 Everything else — atomics, hugepages, `cp.async`, persistent workers,
-on-device sampling — is standard CUDA C that works on any Linux system
-with a modern GPU.
+on-device sampling — is standard CUDA C, but the current portability
+story is best described as "modern NVIDIA GPUs on Linux" rather than
+"all host OSes."
 
 ## Architecture
 
@@ -76,14 +99,14 @@ with a modern GPU.
 ```
   CPU (producer)                          GPU persistent worker
   ═══════════════                          ══════════════════════
-  ring_acquire()                           ┌─ poll ring tail
+  ring_acquire()                           ┌─ poll producer tail
        │                                   │   (acquire-load)
        ▼                                   ▼
   write descriptor ──store──▶  ring  ──load──▶  read descriptor
        │                  slot  │                 │
        ▼                       │                 ▼
   ring_commit()                │            read KV arena
-  (release-store head)         │            (hugepage, no TLB miss)
+  (release-store tail)         │            (hugepage, no TLB miss)
        │                       │                 │
        ▼                       ▼                 ▼
   ┌─────────────────────────────────────┐   decode attention
@@ -95,14 +118,14 @@ with a modern GPU.
                                                   │
                                                   ▼
   CPU polls completion ◀─── store ──────────  comp_ring_push()
-  (acquire-load tail)                         (release-store head)
+  (acquire-load tail)                         (release-store tail)
 ```
 
 ## Components
 
 | Component | File | Description |
 |---|---|---|
-| Work Descriptor | `include/descriptor.h` | 24-byte packed decode-step command |
+| Work Descriptor | `include/descriptor.h` | 28-byte packed decode-step command |
 | SPSC Ring | `include/ring.h`, `src/ring.c` | Lock-free producer-consumer ring in coherent memory |
 | Completion Ring | `include/completion.h` | GPU→CPU result notification (mirror of command ring) |
 | KV Arena | `include/arena.h`, `src/arena.c` | Hugepage-backed slab allocator with O(1) acquire/release |
@@ -114,7 +137,7 @@ with a modern GPU.
 | Rollout State Machine | `include/rollout.h`, `src/rollout.c` | CAS-based rollout lifecycle with valid transition table |
 | Rollout Pipeline | `include/pipeline.h`, `src/pipeline.c` | 6-queue RL pipeline (free/prefill/decode/reward/trajectory/done) |
 | Runtime Metrics | `include/metrics.h`, `src/metrics.c` | Cacheline-padded hot-path counters with formatted output |
-| Hot-Path Guard | `include/hotpath_guard.h`, `src/hotpath_guard.c` | Detects malloc/cudaMalloc/page faults in hot path |
+| Hot-Path Guard | `include/hotpath_guard.h`, `src/hotpath_guard.c` | Wrapper-based tracking for explicit malloc/cudaMalloc/page-fault hooks |
 | Copy-on-Write Prefix KV | `include/kv_prefix.h`, `src/kv_prefix.c`, `cu/kv_prefix.cu` | Shared prefix KV with per-rollout delta branches |
 | Reward Pipeline | `include/reward.h`, `src/reward.c`, `cu/reward.cu` | Mock reward/verifier ring with GPU scoring kernel |
 | Pipeline Benchmark | `bench/bench_pipeline.cu` | Full RL pipeline benchmark with hot-path guard verification |
@@ -141,7 +164,7 @@ with a modern GPU.
 | NUMA binding | **Real** | `mbind(MPOL_BIND)` with `numa_available()` guard |
 | Rollout state machine | **Real** | CAS transitions, slab allocator, transition validation |
 | Pipeline rings | **Real** | 6 lock-free ID rings with acquire/release |
-| Hot-path guards | **Real** | Counts malloc/calloc/etc, flags violations at runtime |
+| Hot-path guards | **Partial** | Counts explicit wrapper calls; useful for regressions, not a whole-process proof |
 | Tracing | **Real** | 1M-entry ring buffer, pair-latency matching, p50/p90/p99 |
 | Request/Done rings (v0.3) | **Real** | Host+device atomics, GPU resident slot management |
 | Attention decoder | **Stub** | `process_descriptor` writes a mock completion — no real attention math |
@@ -175,11 +198,12 @@ production inference stacks today.
 
 ## Build
 
-Requires CUDA 12.x+ and `libnuma-dev`.
+Requires Linux, CUDA 12.x+, and `libnuma-dev` for the full runtime.
 
 ```bash
 make               # build library + test bench + all benchmarks
-make test          # run unit tests (including rollout, pipeline, metrics, guard, reward, prefix KV)
+make smoke         # CPU-only smoke tests for ring/overflow correctness
+make test          # smoke tests + CUDA-backed unit tests where supported
 make bench         # benchmark: 1M tokens through ring+worker
 make bench-pipeline # benchmark: full RL pipeline with rollouts, state machine, reward, hot-path guards
 make bench-trace   # benchmark with nanosecond tracing + latency percentiles
@@ -194,7 +218,7 @@ make bench-all          # run all 6 benchmarks
 | Benchmark | Command | What it proves |
 |-----------|---------|----------------|
 | `bench` | `make bench` | Ring + GPU worker baseline throughput (1M tokens through ring, no rollout logic) |
-| `bench-pipeline` | `make bench-pipeline` | End-to-end RL rollout flow: alloc → decode → reward → trajectory → done with hot-path guard verification |
+| `bench-pipeline` | `make bench-pipeline` | End-to-end RL rollout flow: alloc → decode → reward → trajectory → done with wrapper-guard reporting and optional page-fault snapshots |
 | `bench-trace` | `make bench-trace` | Nanosecond latency breakdown — where pipeline time is spent (p50/p90/p99 for 8 latency pairs) |
 | `bench-cow` | `make bench-cow` | Memory saved by shared prefix KV vs full-duplicate per rollout |
 | `bench-tax` | `make bench-tax` | Control-plane overhead: eventfd syscall vs userspace polling vs persistent worker (this runtime) |
@@ -216,15 +240,15 @@ the control path only.
 
 Results (run `make bench-all` on your hardware):
   Ring throughput:                > 50 M ops/s
-  Full pipeline tokens/s:         > 1M tokens/s
-  Pipeline rollouts/s:            > 10K rollouts/s
+  Full pipeline tokens/s:         measure on your hardware
+  Pipeline rollouts/s:            measure on your hardware
   COW prefix KV memory saved:     > 90% for 10K branches
   Control-plane tax:
     syscall per step:             ~X ns (baseline)
     userspace polling:            ~Y ns (fast, CPU-hungry)
     persistent worker (this):     ~Z ns (fastest, no CPU tax)
-  Hot-path mallocs:               0 (clean)
-  Post-init page faults:          0
+  Wrapper-tracked mallocs:        0 (wrapper-clean)
+  Post-init page faults:          inspect OS snapshot output
   Per-token kernel launches:      0
 ```
 
@@ -259,7 +283,7 @@ make lab-run   # run all labs sequentially
 5. **Reward is GPU-resident** — no PCIe round-trips for scoring
 6. **NVLink-C2C for coordination** — coherent rings, no DMA
 7. **Rollouts are hardware-visible state machines** — CAS transitions through 6 pipeline stages, no Python/CPU per-token control
-8. **Hot-path guards verify zero-alloc** — `hotpath_guard` catches accidental `malloc`/`cudaMalloc` in per-token loops
+8. **Hot-path wrappers catch explicit zero-alloc regressions** — useful guardrail, not a global proof
 9. **Copy-on-write prefix KV** — shared prompt KV across rollouts, only per-rollout deltas allocated
 10. **Credit-based backpressure** — every pipeline stage has a max occupancy; `pipeline_try_push` blocks well before ring-full
 11. **Multiple scheduling policies** — FIFO, shortest-remaining-first, and prefix-sharing policies for the decode queue

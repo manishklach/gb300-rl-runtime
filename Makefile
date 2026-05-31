@@ -12,14 +12,18 @@ SRCDIR  := src
 CUDIR   := cu
 BLDDIR  := build
 
-C_SRCS  := $(wildcard $(SRCDIR)/*.c)
+MAIN_SRC := $(SRCDIR)/main.c
+C_SRCS  := $(filter-out $(MAIN_SRC), $(wildcard $(SRCDIR)/*.c))
 CU_SRCS := $(wildcard $(CUDIR)/*.cu)
 C_OBJS  := $(patsubst $(SRCDIR)/%.c, $(BLDDIR)/%.o, $(C_SRCS))
+MAIN_OBJ := $(BLDDIR)/main.o
 CU_OBJS := $(patsubst $(CUDIR)/%.cu, $(BLDDIR)/%.o, $(CU_SRCS))
 
 TESTDIR := test
 TEST_SRCS  := $(wildcard $(TESTDIR)/*.cu) $(wildcard $(TESTDIR)/*.c)
 TEST_TARGET := $(BLDDIR)/test_bench
+SMOKE_SRC := $(TESTDIR)/test_smoke.c
+SMOKE_TARGET := $(BLDDIR)/test_smoke
 
 BENCHDIR := bench
 BENCH_SRC := $(BENCHDIR)/bench_pipeline.cu
@@ -35,7 +39,7 @@ BENCH_GPU_SCHED_TARGET := $(BLDDIR)/bench_gpu_scheduler
 
 BENCH_TARGETS := $(BENCH_TARGET) $(BENCH_TRACE_TARGET) $(BENCH_COW_TARGET) $(BENCH_TAX_TARGET) $(BENCH_GPU_SCHED_TARGET)
 
-.PHONY: all clean test bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-all
+.PHONY: all clean smoke test bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-all
 
 all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(BENCH_TARGETS)
 
@@ -45,13 +49,16 @@ $(BLDDIR):
 $(BLDDIR)/%.o: $(SRCDIR)/%.c $(BLDDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(MAIN_OBJ): $(MAIN_SRC) $(BLDDIR)
+	$(NVCC) $(NVFLAGS) -x cu -c $< -o $@
+
 $(BLDDIR)/%.o: $(CUDIR)/%.cu $(BLDDIR)
 	$(NVCC) $(NVFLAGS) -c $< -o $@
 
 $(BLDDIR)/test_bench.o: $(TESTDIR)/test_bench.cu $(BLDDIR)
 	$(NVCC) $(NVFLAGS) -c $< -o $@
 
-$(BLDDIR)/libruntime.a: $(C_OBJS) $(CU_OBJS)
+$(BLDDIR)/libruntime.a: $(C_OBJS) $(MAIN_OBJ) $(CU_OBJS)
 	ar rcs $@ $^
 
 $(TEST_TARGET): $(BLDDIR)/test_bench.o $(BLDDIR)/libruntime.a
@@ -72,7 +79,13 @@ $(BENCH_TAX_TARGET): $(BENCH_TAX_SRC)
 $(BENCH_GPU_SCHED_TARGET): $(BENCH_GPU_SCHED_SRC) $(BLDDIR)/libruntime.a
 	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
 
-test: $(TEST_TARGET)
+$(SMOKE_TARGET): $(SMOKE_SRC) $(SRCDIR)/ring.c $(BLDDIR)
+	$(CC) $(CFLAGS) $(SMOKE_SRC) $(SRCDIR)/ring.c -o $@
+
+smoke: $(SMOKE_TARGET)
+	./$(SMOKE_TARGET)
+
+test: smoke $(TEST_TARGET)
 	./$(TEST_TARGET)
 
 bench: $(TEST_TARGET)

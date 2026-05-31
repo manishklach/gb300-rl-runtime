@@ -67,7 +67,8 @@ rollout_worker(RequestRing *req_ring, DoneRing *done_ring,
                     done.tokens_generated = rs->tokens_generated;
                     done.reward = (float)(rs->tokens_generated & 0xFF) / 255.0f;
                     done.status = 0;
-                    done_ring_push(done_ring, &done);
+                    while (done_ring_push(done_ring, &done) != 0)
+                        __nanosleep(100);
                     release_slot(state, s);
                     if (step_count)
                         atomicAdd((unsigned long long *)step_count, 1ULL);

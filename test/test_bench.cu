@@ -18,6 +18,8 @@
 #include "hotpath_guard.h"
 #include "reward.h"
 #include "kv_prefix.h"
+#include "request.h"
+#include "warp_broadcast.cuh"
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +30,27 @@
 /* ─── Declare persistent worker kernel from worker.cu ──────────── */
 __global__ void decode_worker(CommandRing*, KVArena*, CompletionRing*,
                               SampleState*, uint64_t*);
+
+static int
+cuda_is_available(void) {
+  int count = 0;
+  cudaError_t err = cudaGetDeviceCount(&count);
+  return err == cudaSuccess && count > 0;
+}
+
+__global__ static void
+test_warp_broadcast_kernel(uint64_t *seq_out, uint32_t *offset_out,
+                           uint64_t *cookie_out) {
+  uint32_t lane = threadIdx.x & 31;
+  uint64_t seq = (lane == 0) ? 0x123456789ABCDEF0ULL : 0ULL;
+  uint32_t off = (lane == 0) ? 77U : 0U;
+  uint64_t cookie = (lane == 0) ? 0x0FEDCBA987654321ULL : 0ULL;
+
+  __sync_warp();
+  seq_out[lane] = warp_broadcast_u64(seq, 0);
+  offset_out[lane] = warp_broadcast_u32(off, 0);
+  cookie_out[lane] = warp_broadcast_u64(cookie, 0);
+}
 
 /* ─── Test helpers ─────────────────────────────────────────────── */
 
@@ -126,7 +149,7 @@ test_completion_ring(void) {
 
   Completion c_in = {.seq_id = 7, .token_id = 123,
                      .kv_block_offset = 4, .reward_cookie = 0xDEAD};
-  comp_ring_push(&cr, &c_in);
+  assert(comp_ring_push(&cr, &c_in) == 0);
 
   Completion c_out;
   int got = comp_ring_poll(&cr, &c_out);
@@ -135,6 +158,48 @@ test_completion_ring(void) {
   assert(c_out.token_id == 123);
   assert(c_out.kv_block_offset == 4);
   assert(c_out.reward_cookie == 0xDEAD);
+
+  printf("OK\n");
+  return 0;
+}
+
+static int
+test_completion_ring_overflow(void) {
+  printf("  test_completion_ring_overflow ... ");
+
+  CompletionRing cr;
+  memset(&cr, 0, sizeof(cr));
+
+  Completion c = {.seq_id = 7, .token_id = 123,
+                  .kv_block_offset = 4, .reward_cookie = 0xDEAD};
+  for (uint32_t i = 0; i < COMP_RING_SIZE; i++)
+    assert(comp_ring_push(&cr, &c) == 0);
+
+  assert(comp_ring_push(&cr, &c) == -1);
+  assert(cr.overflow.value == 1);
+  assert(comp_ring_poll(&cr, &c) == 1);
+  assert(comp_ring_push(&cr, &c) == 0);
+
+  printf("OK\n");
+  return 0;
+}
+
+static int
+test_done_ring_overflow(void) {
+  printf("  test_done_ring_overflow ... ");
+
+  DoneRing dr;
+  memset(&dr, 0, sizeof(dr));
+
+  RolloutDone done = {.request_id = 1, .rollout_id = 2,
+                      .tokens_generated = 3, .reward = 0.5f, .status = 0};
+  for (uint32_t i = 0; i < REQUEST_RING_SIZE; i++)
+    assert(done_ring_push(&dr, &done) == 0);
+
+  assert(done_ring_push(&dr, &done) == -1);
+  assert(dr.overflow.value == 1);
+  assert(done_ring_pop(&dr, &done) == 1);
+  assert(done_ring_push(&dr, &done) == 0);
 
   printf("OK\n");
   return 0;
@@ -222,6 +287,7 @@ bench_full_pipeline(int n_tokens) {
   int64_t kv_ids[128];
   for (int i = 0; i < 128; i++)
     kv_ids[i] = arena_acquire(&arena);
+  (void)kv_ids;
 
   /* dispatch tokens */
   cudaEvent_t start, stop;
@@ -282,6 +348,7 @@ bench_full_pipeline(int n_tokens) {
       ring_commit(cmd_ring, 1);
     }
   }
+  cudaDeviceSynchronize();
 
   cudaFree(d_step_count);
   cudaFree(d_sample_st);
@@ -391,15 +458,51 @@ test_hotpath_guard(void) {
 
   /* capture stderr to test violation message */
   FILE *old = stderr;
-  stderr = fopen("/dev/null", "w");
-  assert(stderr);
+  FILE *sink = tmpfile();
+  assert(sink);
+  stderr = sink;
   HP_GUARD_MALLOC(&g, 64);
   HP_GUARD_FREE(&g, NULL);
-  fclose(stderr);
+  fclose(sink);
   stderr = old;
 
   assert(g.malloc_count == 2);
   assert(g.free_count == 1);
+  printf("OK\n");
+  return 0;
+}
+
+static int
+test_warp_broadcast(void) {
+  printf("  test_warp_broadcast ... ");
+  if (!cuda_is_available()) {
+    printf("SKIP (no CUDA device)\n");
+    return 0;
+  }
+
+  uint64_t *d_seq = NULL, *d_cookie = NULL;
+  uint32_t *d_off = NULL;
+  uint64_t h_seq[32], h_cookie[32];
+  uint32_t h_off[32];
+
+  cudaMalloc(&d_seq, sizeof(h_seq));
+  cudaMalloc(&d_cookie, sizeof(h_cookie));
+  cudaMalloc(&d_off, sizeof(h_off));
+  test_warp_broadcast_kernel<<<1, 32>>>(d_seq, d_off, d_cookie);
+  cudaDeviceSynchronize();
+  cudaMemcpy(h_seq, d_seq, sizeof(h_seq), cudaMemcpyDeviceToHost);
+  cudaMemcpy(h_off, d_off, sizeof(h_off), cudaMemcpyDeviceToHost);
+  cudaMemcpy(h_cookie, d_cookie, sizeof(h_cookie), cudaMemcpyDeviceToHost);
+
+  for (int i = 0; i < 32; i++) {
+    assert(h_seq[i] == 0x123456789ABCDEF0ULL);
+    assert(h_off[i] == 77U);
+    assert(h_cookie[i] == 0x0FEDCBA987654321ULL);
+  }
+
+  cudaFree(d_seq);
+  cudaFree(d_cookie);
+  cudaFree(d_off);
   printf("OK\n");
   return 0;
 }
@@ -483,8 +586,12 @@ main(int argc, char **argv) {
   if (bench_mode) {
     printf("── Benchmark mode ──\n\n");
     bench_ring();
-    cudaSetDevice(0);
-    bench_full_pipeline(n_tokens);
+    if (cuda_is_available()) {
+      cudaSetDevice(0);
+      bench_full_pipeline(n_tokens);
+    } else {
+      printf("  GPU pipeline benchmark: SKIP (no CUDA device)\n");
+    }
     printf("\nDone.\n");
     return 0;
   }
@@ -495,6 +602,7 @@ main(int argc, char **argv) {
   test_ring_full();
   test_arena_basic();
   test_completion_ring();
+  test_completion_ring_overflow();
   test_rollout_slab();
   test_rollout_transitions();
   test_pipeline_rings();
@@ -502,9 +610,16 @@ main(int argc, char **argv) {
   test_hotpath_guard();
   test_reward_ring();
   test_kv_prefix();
+  test_done_ring_overflow();
+  test_warp_broadcast();
 
-  printf("\n── Quick pipeline test (1000 tokens) ──\n\n");
-  bench_full_pipeline(1000);
+  if (cuda_is_available()) {
+    printf("\n── Quick pipeline test (1000 tokens) ──\n\n");
+    bench_full_pipeline(1000);
+  } else {
+    printf("\n── Quick pipeline test ──\n\n");
+    printf("  SKIP (no CUDA device)\n");
+  }
 
   printf("\nAll tests passed.\n");
   return 0;

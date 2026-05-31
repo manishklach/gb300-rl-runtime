@@ -6,6 +6,7 @@
 #include "ring.h"
 #include "arena.h"
 #include "completion.h"
+#include "sample.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,13 +93,17 @@ static void bench_shutdown(BenchContext *ctx)
     Descriptor sentinel;
     memset(&sentinel, 0, sizeof(sentinel));
     sentinel.seq_id = UINT64_MAX;
-    for (int i = 0; i < ctx->num_sms; i++) {
+    int sent = 0;
+    while (sent < ctx->num_sms) {
         uint32_t pos = ring_acquire(ctx->cmd_ring, 1);
-        if (pos != UINT32_MAX) {
-            ctx->cmd_ring->slots[pos] = sentinel;
-            ring_commit(ctx->cmd_ring, 1);
-        }
+        if (pos == UINT32_MAX)
+            continue;
+        ctx->cmd_ring->slots[pos] = sentinel;
+        ring_commit(ctx->cmd_ring, 1);
+        sent++;
     }
+
+    cudaDeviceSynchronize();
 
     cudaFree(ctx->d_step_count);
     cudaFree(ctx->d_sample_st);
@@ -111,6 +116,7 @@ static int dispatch_decode_step(BenchContext *ctx, uint32_t rollout_id,
                                 uint32_t step, uint32_t kv_block,
                                 uint32_t total_tokens)
 {
+    (void)total_tokens;
     uint32_t pos = ring_acquire(ctx->cmd_ring, 1);
     if (pos == UINT32_MAX) {
         METRIC_INC(ctx->metrics, ring_full_spins);
@@ -177,8 +183,8 @@ int main(int argc, char **argv)
     hp_guard_activate(&ctx.hp_guard);
 
     uint64_t t0 = now_ns();
-
-    uint32_t total_completed = 0;
+    PageFaultSnapshot pf_start, pf_end, pf_delta;
+    metrics_snapshot_page_faults(&pf_start);
 
     for (int r = 0; r < n_rollouts; r++) {
         uint32_t rid;
@@ -224,31 +230,42 @@ int main(int argc, char **argv)
         rollout_transition(ro, ROLL_TRAJECTORY_READY, ROLL_DONE);
         pipeline_push(&ctx.pipeline, Q_DONE, rid);
 
-        total_completed += tokens_per_rollout;
         METRIC_INC(&ctx.metrics, rollouts_completed);
     }
 
-    int comps = drain_completions(&ctx);
+    uint64_t expected_completions = METRIC_READ(&ctx.metrics, descriptors_posted);
+    uint64_t comps = 0;
+    while (comps < expected_completions)
+        comps += (uint64_t)drain_completions(&ctx);
 
     hp_guard_deactivate(&ctx.hp_guard);
 
     uint64_t t1 = now_ns();
     uint64_t wall_ns = t1 - t0;
+    metrics_snapshot_page_faults(&pf_end);
+    metrics_diff_page_faults(&pf_delta, &pf_start, &pf_end);
+
+    ctx.metrics.completion_overflow_attempts = ctx.comp_ring->overflow.value;
 
     metrics_fprintf(stdout, &ctx.metrics, wall_ns, n_tokens, n_rollouts);
 
-    printf("\n  Completions drained:  %d\n", comps);
-    printf("  Hot path mallocs:     %lu\n",
+    printf("\n  Completions drained:  %lu\n", (unsigned long)comps);
+    printf("  Wrapper-tracked mallocs: %lu\n",
            (unsigned long)ctx.hp_guard.malloc_count);
-    printf("  Hot path cudaMallocs: %lu\n",
+    printf("  Wrapper-tracked cudaMallocs: %lu\n",
            (unsigned long)ctx.hp_guard.cuda_malloc_count);
-    printf("  Page faults tracked:  %lu\n",
+    printf("  Wrapper-tracked page faults: %lu\n",
            (unsigned long)ctx.hp_guard.page_fault_count);
+    if (pf_delta.supported) {
+        printf("  OS page faults (minor/major): %lu / %lu\n",
+               (unsigned long)pf_delta.minor_faults,
+               (unsigned long)pf_delta.major_faults);
+    }
 
     if (ctx.hp_guard.malloc_count == 0 && ctx.hp_guard.cuda_malloc_count == 0)
-        printf("  Hot path guards:      CLEAN (no violations)\n");
+        printf("  Hot path wrappers:    WRAPPER-CLEAN (not a global guarantee)\n");
     else
-        printf("  Hot path guards:      VIOLATIONS DETECTED\n");
+        printf("  Hot path wrappers:    WRAPPER VIOLATIONS DETECTED\n");
 
     printf("\nDone.\n");
 

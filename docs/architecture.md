@@ -199,7 +199,7 @@ Three layers of instrumentation, each adding more detail:
 
 ```
 include/
-  descriptor.h      24-byte decode-step descriptor
+  descriptor.h      28-byte decode-step descriptor
   ring.h            Lock-free SPSC command ring (CPU→GPU)
   completion.h      Completion ring (GPU→CPU)
   arena.h           Hugepage-backed KV block arena

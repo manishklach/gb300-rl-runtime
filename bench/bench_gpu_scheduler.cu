@@ -94,10 +94,12 @@ int main(int argc, char **argv)
     printf("  Throughput:         %.0f rollouts/s\n", n_rollouts / wall_s);
     printf("  Throughput:         %.0f tokens/s\n", total_tokens / wall_s);
     printf("  GPU steps recorded: %lu\n", (unsigned long)steps);
-    printf("  CPU dispatches:     1  (all rollouts batched)\n");
+    printf("  CPU dispatches:     %d  (one request submitted per rollout)\n",
+           n_rollouts);
     printf("  CPU polls:          %lu  (done notifications)\n",
            (unsigned long)completed);
     printf("  CPU per-token work: none  (GPU managed all decode steps)\n");
+    printf("  Done ring overflows:%u\n", done_ring->overflow.value);
 
     /* sentinel shutdown */
     uint32_t pos;

@@ -3,6 +3,7 @@
 #include "completion.h"
 #include "prefetch.h"
 #include "sample.h"
+#include "warp_broadcast.cuh"
 #include <cuda_runtime.h>
 #include <cooperative_groups.h>
 
@@ -43,7 +44,8 @@ process_descriptor(const Descriptor *desc, KVArena *arena,
   comp.reward_cookie   = desc->reward_cookie;
   comp.cycles_taken    = 1000;  /* placeholder */
 
-  comp_ring_push(comp_ring, &comp);
+  while (comp_ring_push(comp_ring, &comp) != 0)
+    __nanosleep(100);
 }
 
 /* ─── Persistent decode worker kernel ────────────────────────────
@@ -75,13 +77,18 @@ decode_worker(CommandRing   *ring,
     if (lane == 0)
       got = ring_consume(ring, &desc);
 
-    /* broadcast via __sync_warp (implicit in warp, explicit for safety) */
+    /* Use __shfl_sync for value broadcast and __sync_warp only as a barrier. */
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
-    got = __sync_warp(got);
+    __sync_warp();
+    got = (int)warp_broadcast_u32((uint32_t)got, 0);
     if (got) {
-      desc.seq_id          = __sync_warp(desc.seq_id);
-      desc.kv_block_offset = __sync_warp(desc.kv_block_offset);
-      desc.reward_cookie   = __sync_warp(desc.reward_cookie);
+      desc.seq_id            = warp_broadcast_u64(desc.seq_id, 0);
+      desc.kv_block_offset   = warp_broadcast_u32(desc.kv_block_offset, 0);
+      desc.num_kv_blocks     = (uint16_t)warp_broadcast_u32(desc.num_kv_blocks, 0);
+      desc.attention_flags   = (uint8_t)warp_broadcast_u32(desc.attention_flags, 0);
+      desc.pad               = (uint8_t)warp_broadcast_u32(desc.pad, 0);
+      desc.output_token_offset = warp_broadcast_u32(desc.output_token_offset, 0);
+      desc.reward_cookie     = warp_broadcast_u64(desc.reward_cookie, 0);
     }
 #endif
 
