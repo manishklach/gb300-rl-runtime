@@ -1,6 +1,7 @@
 #include "ring.h"
 #include "arena.h"
 #include "completion.h"
+#include "attention_decode.h"
 #include "prefetch.h"
 #include "sample.h"
 #include "warp_broadcast.cuh"
@@ -24,25 +25,16 @@ __device__ static void
 process_descriptor(const Descriptor *desc, KVArena *arena,
                    CompletionRing *comp_ring, SampleState *sample_st,
                    uint8_t *smem_buf) {
-  /* load first KV block (prefetch pipeline) */
   uint8_t *kv_src = arena_block_ptr(arena, desc->kv_block_offset);
-  prefetch_issue(kv_src, smem_buf);
-  prefetch_wait();
+  DecodeStepResult result =
+      attention_decode_step_fixed128(desc, kv_src, sample_st, smem_buf);
 
-  /* ─── stub: simulated decode ───
-   * In production: launch tiled attention using the prefetched
-   * KV data in smem_buf, write a logits vector to device mem,
-   * then call sample_token to produce the output.
-   *
-   * For this prototype we just advance the completion ring to
-   * validate the data path.
-   */
   Completion comp;
   comp.seq_id          = desc->seq_id;
-  comp.token_id        = (uint32_t)(desc->seq_id * 2654435761ULL); /* mock */
+  comp.token_id        = result.token_id;
   comp.kv_block_offset = desc->kv_block_offset;
   comp.reward_cookie   = desc->reward_cookie;
-  comp.cycles_taken    = 1000;  /* placeholder */
+  comp.cycles_taken    = result.cycle_estimate;
 
   while (comp_ring_push(comp_ring, &comp) != 0)
     __nanosleep(100);

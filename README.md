@@ -167,6 +167,8 @@ story is best described as "modern NVIDIA GPUs on Linux" rather than
 | Hot-path guards | **Partial** | Counts explicit wrapper calls; useful for regressions, not a whole-process proof |
 | Tracing | **Real** | 1M-entry ring buffer, pair-latency matching, p50/p90/p99 |
 | Request/Done rings (v0.3) | **Real** | Host+device atomics, GPU resident slot management |
+| Fixed128 decode path | **Scaffold** | Shared-memory staging + fixed-path interface for the first real decode microkernel |
+| KV layout descriptor | **Scaffold** | Concrete fixed128 KV block math, alignment invariants, and offset helpers |
 | Attention decoder | **Stub** | `process_descriptor` writes a mock completion — no real attention math |
 | Reward model | **Stub** | `reward_score_mock()` returns `(n & 0xFF) / 255.0f` — no real scoring |
 
@@ -195,6 +197,7 @@ production inference stacks today.
 | `docs/metrics.md` | Target metrics and benchmark commands (all benchmarks) |
 | `docs/tracing.md` | Trace event types, latency pairs, example output |
 | `docs/gpu_scheduler.md` | GPU-resident rollout scheduler design and comparison |
+| `docs/decode_microkernel.md` | Status and intent of the fixed-shape decode microkernel scaffold |
 | `docs/v0.2.2-roadmap.md` | File-by-file plan for the first real hardware-close decode path |
 
 ## Build
@@ -211,7 +214,9 @@ make bench-trace   # benchmark with nanosecond tracing + latency percentiles
 make bench-cow          # COW prefix KV memory savings benchmark
 make bench-tax          # control-plane tax comparison (syscall vs polling vs persistent worker)
 make bench-gpu-scheduler # GPU-resident rollout scheduler (zero CPU per-token work)
-make bench-all          # run all 6 benchmarks
+make bench-decode       # fixed128 decode microkernel scaffold benchmark
+make bench-kv-layout    # KV block-layout scaffold and offset math check
+make bench-all          # run all benchmarks
 ```
 
 ## What Each Benchmark Proves
@@ -224,6 +229,8 @@ make bench-all          # run all 6 benchmarks
 | `bench-cow` | `make bench-cow` | Memory saved by shared prefix KV vs full-duplicate per rollout |
 | `bench-tax` | `make bench-tax` | Control-plane overhead: eventfd syscall vs userspace polling vs persistent worker (this runtime) |
 | `bench-gpu-scheduler` | `make bench-gpu-scheduler` | GPU-managed rollout lifecycle — zero CPU per-token work, CPU only sees request/done |
+| `bench-decode` | `make bench-decode` | Fixed128 decode microkernel scaffold: shared-memory staging shape and per-iteration cost, not real attention math yet |
+| `bench-kv-layout` | `make bench-kv-layout` | KV block layout invariants, byte offsets, and fixed-shape memory math |
 
 ## Benchmark Snapshot
 

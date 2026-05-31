@@ -1,5 +1,22 @@
 # Release Notes
 
+## v0.2.2-a scaffold
+
+This checkpoint adds the first repository scaffolding for a real,
+hardware-close decode path without claiming that the attention math is
+implemented yet.
+
+- added `include/kv_layout.h` for one fixed-shape KV block layout
+- added `include/attention_decode.h` and `cu/attention_decode.cu`
+- routed `cu/worker.cu` through the fixed128 decode helper scaffold
+- added `make bench-decode` and `make bench-kv-layout`
+- added `docs/decode_microkernel.md` to document what is real versus
+  still stubbed
+
+The decode helper currently stages data through shared memory and reports
+deterministic metadata, but it does not yet implement QK/softmax/V
+attention math.
+
 ## Up Next: v0.2.2
 
 Planned next step:

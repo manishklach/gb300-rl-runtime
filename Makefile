@@ -36,10 +36,14 @@ BENCH_TAX_SRC := $(BENCHDIR)/bench_control_tax.cu
 BENCH_TAX_TARGET := $(BLDDIR)/bench_control_tax
 BENCH_GPU_SCHED_SRC := $(BENCHDIR)/bench_gpu_scheduler.cu
 BENCH_GPU_SCHED_TARGET := $(BLDDIR)/bench_gpu_scheduler
+BENCH_DECODE_SRC := $(BENCHDIR)/bench_decode_microkernel.cu
+BENCH_DECODE_TARGET := $(BLDDIR)/bench_decode_microkernel
+BENCH_KV_LAYOUT_SRC := $(BENCHDIR)/bench_kv_layout.cu
+BENCH_KV_LAYOUT_TARGET := $(BLDDIR)/bench_kv_layout
 
-BENCH_TARGETS := $(BENCH_TARGET) $(BENCH_TRACE_TARGET) $(BENCH_COW_TARGET) $(BENCH_TAX_TARGET) $(BENCH_GPU_SCHED_TARGET)
+BENCH_TARGETS := $(BENCH_TARGET) $(BENCH_TRACE_TARGET) $(BENCH_COW_TARGET) $(BENCH_TAX_TARGET) $(BENCH_GPU_SCHED_TARGET) $(BENCH_DECODE_TARGET) $(BENCH_KV_LAYOUT_TARGET)
 
-.PHONY: all clean smoke test bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-all
+.PHONY: all clean smoke test bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-all
 
 all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(BENCH_TARGETS)
 
@@ -79,6 +83,12 @@ $(BENCH_TAX_TARGET): $(BENCH_TAX_SRC)
 $(BENCH_GPU_SCHED_TARGET): $(BENCH_GPU_SCHED_SRC) $(BLDDIR)/libruntime.a
 	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
 
+$(BENCH_DECODE_TARGET): $(BENCH_DECODE_SRC) $(BLDDIR)/libruntime.a
+	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
+
+$(BENCH_KV_LAYOUT_TARGET): $(BENCH_KV_LAYOUT_SRC) $(BLDDIR)/libruntime.a
+	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
+
 $(SMOKE_TARGET): $(SMOKE_SRC) $(SRCDIR)/ring.c $(BLDDIR)
 	$(CC) $(CFLAGS) $(SMOKE_SRC) $(SRCDIR)/ring.c -o $@
 
@@ -106,7 +116,13 @@ bench-tax: $(BENCH_TAX_TARGET)
 bench-gpu-scheduler: $(BENCH_GPU_SCHED_TARGET)
 	./$(BENCH_GPU_SCHED_TARGET)
 
-bench-all: bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler
+bench-decode: $(BENCH_DECODE_TARGET)
+	./$(BENCH_DECODE_TARGET)
+
+bench-kv-layout: $(BENCH_KV_LAYOUT_TARGET)
+	./$(BENCH_KV_LAYOUT_TARGET)
+
+bench-all: bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout
 
 LABS := 01_false_sharing 02_spsc_ring 03_hugepage_tlb 04_syscall_vs_poll 05_doorbell_mock
 
