@@ -145,6 +145,22 @@ make bench-tax                               # default: 1M iterations
 make bench-tax ARGS="10000000"               # 10M iterations
 ```
 
+## Hardware Fastpath Benchmark
+
+Measured by `bench/bench_hw_fastpath.c`:
+
+| Metric | Target | How to measure |
+|--------|:------:|----------------|
+| Descriptor submit throughput | measure on your CPU | `make bench-hw-fastpath` |
+| Worker-sim completion throughput | measure on your CPU | `make bench-hw-fastpath` |
+| Doorbell batching tradeoff | compare batch 1 / 8 / 32 / 64 | Included in output |
+| Submit latency p50/p99 | lower is better | Included in output |
+
+```bash
+make bench-hw-fastpath
+make bench-hw-fastpath ARGS="500000"
+```
+
 ## GPU-Resident Scheduler Benchmark
 
 Measured by `bench/bench_gpu_scheduler.cu`:
@@ -185,6 +201,7 @@ make bench-prefetch ARGS="8192"
 | `bench-trace` | Nanosecond latency breakdown (p50/p90/p99) |
 | `bench-cow` | Memory saved by shared prefix KV |
 | `bench-tax` | Control-plane overhead: syscall vs polling vs persistent worker |
+| `bench-hw-fastpath` | Hardware-facing descriptor rings, MMIO-style doorbells, and batching tradeoffs |
 | `bench-gpu-scheduler` | GPU-managed rollout lifecycle — zero CPU per-token work |
 | `bench-prefetch` | Isolated KV staging bandwidth with and without `cp.async` |
 

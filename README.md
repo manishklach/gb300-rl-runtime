@@ -147,6 +147,13 @@ story is best described as "modern NVIDIA GPUs on Linux" rather than
 | Pipeline Backpressure | `include/pipeline.h`, `src/pipeline.c` | Credit-based flow control per pipeline stage |
 | COW Prefix KV Benchmark | `bench/bench_cow_prefix.cu` | Memory savings comparison: COW vs full-duplicate KV |
 | Control-Plane Tax Benchmark | `bench/bench_control_tax.cu` | Syscall vs polling vs persistent worker comparison |
+| MMIO Helpers | `include/mmio.h`, `src/mmio.c` | Host-side write barrier and MMIO-style doorbell helpers |
+| Hardware Descriptor | `include/hw_desc.h` | 64-byte fixed-format hardware-facing inference descriptor |
+| Hardware Ring | `include/hw_ring.h`, `src/hw_ring.c` | Cacheline-owned SPSC descriptor ring for command/done queues |
+| Hardware Submit API | `include/infer_submit.h`, `src/infer_submit.c` | Host inference submit path that pushes descriptors and rings a doorbell |
+| Hardware Worker Simulator | `include/hw_worker_sim.h`, `src/hw_worker_sim.c` | CPU-only device model that consumes command descriptors and posts completions |
+| Hardware Fastpath Test | `test/test_hw_ring.c` | CPU-only validation for the descriptor/doorbell/ring path |
+| Hardware Fastpath Benchmark | `bench/bench_hw_fastpath.c` | Doorbell batching and worker-sim throughput benchmark |
 | GPU Request Ring | `include/request.h` | SPSC request ring (CPU→GPU) + done ring (GPU→CPU) for GPU-resident scheduler |
 | GPU Rollout Scheduler | `cu/gpu_scheduler.cu` | Persistent GPU kernel that manages rollout lifecycle without CPU per-token involvement |
 | GPU Scheduler Benchmark | `bench/bench_gpu_scheduler.cu` | Benchmark for GPU-resident rollout scheduler |
@@ -174,6 +181,7 @@ story is best described as "modern NVIDIA GPUs on Linux" rather than
 | `cp.async` prefetch path | **Partial** | The prefetch layer now uses lane-striped 16-byte `cp.async` helpers and explicit commit/wait flow, but broader multistage overlap is still limited |
 | KV layout descriptor | **Scaffold** | Concrete fixed128 KV block math, alignment invariants, and offset helpers |
 | Attention decoder | **Partial** | Fixed128 real path exists; broader runtime/model coverage is still incomplete |
+| Hardware-facing inference fastpath | **Real** | 64-byte descriptors, cacheline-owned command/done rings, MMIO-style doorbell writes, and a CPU-only worker simulator for device-model validation |
 | Reward model | **Stub** | `reward_score_mock()` returns `(n & 0xFF) / 255.0f` — no real scoring |
 
 Benchmarks measure **ring throughput, control-plane latency, and pipeline overhead**,
@@ -191,6 +199,24 @@ async reward handoff.
 
 The goal is to study the control-plane mechanics, not to outperform
 production inference stacks today.
+
+## Hardware-Facing Inference Fastpath
+
+The repository now includes a second host-side fastpath that is shaped
+like a real device queue rather than a CUDA-specific control surface.
+
+- each `hw_desc_t` is exactly 64 bytes: one cache line, fixed format,
+  no heap pointers
+- `hw_ring_t` separates consumer-owned `head` from producer-owned `tail`
+  on different cache lines and uses acquire/release atomics
+- `infer_submit_decode()` pushes a descriptor, release-stores the tail,
+  and rings an MMIO-style doorbell with `mmio_write32()`
+- `hw_worker_sim_run()` provides a CPU-only device model that consumes
+  command descriptors and posts done/reward-needed completions
+
+This is a hardware-facing model, not direct access to NVIDIA internal
+GPU doorbells. The point is to make the queueing discipline, descriptor
+shape, and doorbell tradeoffs explicit and measurable.
 
 ## Documentation
 
@@ -213,11 +239,13 @@ Requires Linux, CUDA 12.x+, and `libnuma-dev` for the full runtime.
 make               # build library + test bench + all benchmarks
 make smoke         # CPU-only smoke tests for ring/overflow correctness
 make test          # smoke tests + CUDA-backed unit tests where supported
+make test-hw-ring  # CPU-only hardware fastpath tests
 make bench         # benchmark: 1M tokens through ring+worker
 make bench-pipeline # benchmark: full RL pipeline with rollouts, state machine, reward, hot-path guards
 make bench-trace   # benchmark with nanosecond tracing + latency percentiles
 make bench-cow          # COW prefix KV memory savings benchmark
 make bench-tax          # control-plane tax comparison (syscall vs polling vs persistent worker)
+make bench-hw-fastpath  # hardware-facing descriptor + doorbell batching benchmark
 make bench-gpu-scheduler # GPU-resident rollout scheduler (zero CPU per-token work)
 make bench-decode       # fixed128 decode microkernel scaffold benchmark
 make bench-kv-layout    # KV block-layout scaffold and offset math check
@@ -243,6 +271,7 @@ the CUDA toolkit installed but no accelerator attached.
 | `bench-trace` | `make bench-trace` | Nanosecond latency breakdown — where pipeline time is spent (p50/p90/p99 for 8 latency pairs) |
 | `bench-cow` | `make bench-cow` | Memory saved by shared prefix KV vs full-duplicate per rollout |
 | `bench-tax` | `make bench-tax` | Control-plane overhead: eventfd syscall vs userspace polling vs persistent worker (this runtime) |
+| `bench-hw-fastpath` | `make bench-hw-fastpath` | 64-byte hardware descriptor submission, MMIO-style doorbell batching, and CPU-only worker-sim completion throughput |
 | `bench-gpu-scheduler` | `make bench-gpu-scheduler` | GPU-managed rollout lifecycle — zero CPU per-token work, CPU only sees request/done |
 | `bench-decode` | `make bench-decode` | Fixed128 real math path for one staged KV block, benchmarked separately from control-plane costs |
 | `bench-kv-layout` | `make bench-kv-layout` | KV block layout invariants, byte offsets, and fixed-shape memory math |

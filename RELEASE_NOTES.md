@@ -12,6 +12,20 @@
 - updated decode docs to reflect the more hardware-shaped fixed128 path
 - verified the CPU smoke suite still passes after the kernel-side change
 
+### Hardware Fastpath Layer
+
+- added `include/mmio.h` and `src/mmio.c` for host-side MMIO-style
+  doorbell helpers and write barriers
+- added a 64-byte `hw_desc_t` in `include/hw_desc.h`
+- added `include/hw_ring.h` and `src/hw_ring.c` for a cacheline-owned
+  SPSC hardware descriptor ring
+- added `include/infer_submit.h` and `src/infer_submit.c` for a
+  hardware-facing inference submit API
+- added `include/hw_worker_sim.h` and `src/hw_worker_sim.c` for a
+  CPU-only device-model worker
+- added `test/test_hw_ring.c` and `bench/bench_hw_fastpath.c`
+- updated the Makefile, README, and metrics docs to expose the new path
+
 ## v0.3.2
 
 This release focuses on benchmark readiness, CPU-only verification, and

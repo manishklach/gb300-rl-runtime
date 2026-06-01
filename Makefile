@@ -24,6 +24,8 @@ TEST_SRCS  := $(wildcard $(TESTDIR)/*.cu) $(wildcard $(TESTDIR)/*.c)
 TEST_TARGET := $(BLDDIR)/test_bench
 SMOKE_SRC := $(TESTDIR)/test_smoke.c
 SMOKE_TARGET := $(BLDDIR)/test_smoke
+HW_TEST_SRC := $(TESTDIR)/test_hw_ring.c
+HW_TEST_TARGET := $(BLDDIR)/test_hw_ring
 
 BENCHDIR := bench
 BENCH_SRC := $(BENCHDIR)/bench_pipeline.cu
@@ -42,8 +44,10 @@ BENCH_KV_LAYOUT_SRC := $(BENCHDIR)/bench_kv_layout.cu
 BENCH_KV_LAYOUT_TARGET := $(BLDDIR)/bench_kv_layout
 BENCH_PREFETCH_SRC := $(BENCHDIR)/bench_prefetch.cu
 BENCH_PREFETCH_TARGET := $(BLDDIR)/bench_prefetch
+BENCH_HW_FASTPATH_SRC := $(BENCHDIR)/bench_hw_fastpath.c
+BENCH_HW_FASTPATH_TARGET := $(BLDDIR)/bench_hw_fastpath
 
-BENCH_TARGETS := $(BENCH_TARGET) $(BENCH_TRACE_TARGET) $(BENCH_COW_TARGET) $(BENCH_TAX_TARGET) $(BENCH_GPU_SCHED_TARGET) $(BENCH_DECODE_TARGET) $(BENCH_KV_LAYOUT_TARGET) $(BENCH_PREFETCH_TARGET)
+BENCH_TARGETS := $(BENCH_TARGET) $(BENCH_TRACE_TARGET) $(BENCH_COW_TARGET) $(BENCH_TAX_TARGET) $(BENCH_GPU_SCHED_TARGET) $(BENCH_DECODE_TARGET) $(BENCH_KV_LAYOUT_TARGET) $(BENCH_PREFETCH_TARGET) $(BENCH_HW_FASTPATH_TARGET)
 CUDA_CHECK_DIR := $(BLDDIR)/cuda_check
 CUDA_CHECK_SRCS := $(MAIN_SRC) $(CU_SRCS) $(TESTDIR)/test_bench.cu \
                    $(BENCHDIR)/bench_pipeline.cu $(BENCHDIR)/bench_trace_pipeline.cu \
@@ -52,9 +56,9 @@ CUDA_CHECK_SRCS := $(MAIN_SRC) $(CU_SRCS) $(TESTDIR)/test_bench.cu \
                    $(BENCHDIR)/bench_prefetch.cu
 CUDA_PTX_SRCS := $(CU_SRCS) $(BENCHDIR)/bench_decode_microkernel.cu $(BENCHDIR)/bench_prefetch.cu
 
-.PHONY: all clean smoke test bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-prefetch bench-all ci-build ci-run cuda-compile-check cuda-ptx-check
+.PHONY: all clean smoke test test-hw-ring bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-prefetch bench-hw-fastpath bench-all ci-build ci-run cuda-compile-check cuda-ptx-check
 
-all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(BENCH_TARGETS)
+all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(HW_TEST_TARGET) $(BENCH_TARGETS)
 
 $(BLDDIR):
 	mkdir -p $(BLDDIR)
@@ -104,13 +108,22 @@ $(BENCH_KV_LAYOUT_TARGET): $(BENCH_KV_LAYOUT_SRC) $(BLDDIR)/libruntime.a
 $(BENCH_PREFETCH_TARGET): $(BENCH_PREFETCH_SRC) $(BLDDIR)/libruntime.a
 	$(NVCC) $(NVFLAGS) $< -L$(BLDDIR) -lruntime $(LDFLAGS) -o $@
 
+$(BENCH_HW_FASTPATH_TARGET): $(BENCH_HW_FASTPATH_SRC) $(SRCDIR)/hw_ring.c $(SRCDIR)/infer_submit.c $(SRCDIR)/hw_worker_sim.c $(SRCDIR)/mmio.c $(BLDDIR)
+	$(CC) $(CFLAGS) $(BENCH_HW_FASTPATH_SRC) $(SRCDIR)/hw_ring.c $(SRCDIR)/infer_submit.c $(SRCDIR)/hw_worker_sim.c $(SRCDIR)/mmio.c -lpthread -o $@
+
 $(SMOKE_TARGET): $(SMOKE_SRC) $(SRCDIR)/ring.c $(SRCDIR)/pipeline.c $(SRCDIR)/rollout.c $(SRCDIR)/decode_batch.c $(BLDDIR)
 	$(CC) $(CFLAGS) $(SMOKE_SRC) $(SRCDIR)/ring.c $(SRCDIR)/pipeline.c $(SRCDIR)/rollout.c $(SRCDIR)/decode_batch.c -o $@
+
+$(HW_TEST_TARGET): $(HW_TEST_SRC) $(SRCDIR)/hw_ring.c $(SRCDIR)/infer_submit.c $(SRCDIR)/hw_worker_sim.c $(SRCDIR)/mmio.c $(BLDDIR)
+	$(CC) $(CFLAGS) $(HW_TEST_SRC) $(SRCDIR)/hw_ring.c $(SRCDIR)/infer_submit.c $(SRCDIR)/hw_worker_sim.c $(SRCDIR)/mmio.c -lpthread -o $@
 
 smoke: $(SMOKE_TARGET)
 	./$(SMOKE_TARGET)
 
-test: smoke $(TEST_TARGET)
+test-hw-ring: $(HW_TEST_TARGET)
+	./$(HW_TEST_TARGET)
+
+test: smoke test-hw-ring $(TEST_TARGET)
 	./$(TEST_TARGET)
 
 bench: $(TEST_TARGET)
@@ -140,7 +153,10 @@ bench-kv-layout: $(BENCH_KV_LAYOUT_TARGET)
 bench-prefetch: $(BENCH_PREFETCH_TARGET)
 	./$(BENCH_PREFETCH_TARGET)
 
-bench-all: bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-prefetch
+bench-hw-fastpath: $(BENCH_HW_FASTPATH_TARGET)
+	./$(BENCH_HW_FASTPATH_TARGET) $(ARGS)
+
+bench-all: bench-hw-fastpath bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-prefetch
 
 LABS := 01_false_sharing 02_spsc_ring 03_hugepage_tlb 04_syscall_vs_poll 05_doorbell_mock 06_memory_ordering
 LABS_CPU_SAFE := 01_false_sharing 02_spsc_ring 04_syscall_vs_poll 05_doorbell_mock 06_memory_ordering
@@ -177,10 +193,12 @@ lab-run-safe:
 	@$(MAKE) -C lab/06_memory_ordering run ARGS="200000"
 	@echo
 
-ci-build: $(SMOKE_TARGET) $(BENCH_TAX_TARGET) labs
+ci-build: $(SMOKE_TARGET) $(HW_TEST_TARGET) $(BENCH_TAX_TARGET) $(BENCH_HW_FASTPATH_TARGET) labs
 
 ci-run: smoke
+	./$(HW_TEST_TARGET)
 	./$(BENCH_TAX_TARGET) 100000
+	./$(BENCH_HW_FASTPATH_TARGET) 10000
 	$(MAKE) lab-run-safe
 
 cuda-compile-check: $(CUDA_CHECK_DIR)
