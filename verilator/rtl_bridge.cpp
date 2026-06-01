@@ -163,11 +163,10 @@ bool RtlRuntimeBridge::submit_decode(uint16_t rollout_id,
     pack_desc(RTL_DESC_OP_DECODE, 0u, rollout_id, kv_arena_id, prefix_id,
               kv_offset, delta_offset, seq_len, max_tokens, reward_model_id, 0u);
 
-    if (!host_desc_ready()) {
+    for (int i = 0; !host_desc_ready() && i < 16; i++)
         tick();
-        if (!host_desc_ready())
-            return false;
-    }
+    if (!host_desc_ready())
+        return false;
 
     top_->host_desc_valid = 1;
     top_->doorbell_pulse = 1;
@@ -181,11 +180,10 @@ bool RtlRuntimeBridge::submit_stop(uint16_t rollout_id)
 {
     pack_desc(RTL_DESC_OP_STOP, 0u, rollout_id, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
 
-    if (!host_desc_ready()) {
+    for (int i = 0; !host_desc_ready() && i < 16; i++)
         tick();
-        if (!host_desc_ready())
-            return false;
-    }
+    if (!host_desc_ready())
+        return false;
 
     top_->host_desc_valid = 1;
     top_->doorbell_pulse = 1;
