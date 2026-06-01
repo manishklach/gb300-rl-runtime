@@ -7,6 +7,7 @@ NVFLAGS := -O3 -Iinclude --extended-lambda \
            -gencode arch=compute_89,code=sm_89 \
            -gencode arch=compute_90,code=sm_90a
 LDFLAGS := -lpthread -lnuma -lcudart
+VERILATOR ?= verilator
 
 SRCDIR  := src
 CUDIR   := cu
@@ -55,6 +56,10 @@ CUDA_CHECK_SRCS := $(MAIN_SRC) $(CU_SRCS) $(TESTDIR)/test_bench.cu \
                    $(BENCHDIR)/bench_decode_microkernel.cu $(BENCHDIR)/bench_kv_layout.cu \
                    $(BENCHDIR)/bench_prefetch.cu
 CUDA_PTX_SRCS := $(CU_SRCS) $(BENCHDIR)/bench_decode_microkernel.cu $(BENCHDIR)/bench_prefetch.cu
+VERILATOR_RTL_SRCS := rtl/desc_pkg.sv rtl/mmio_regs.sv rtl/desc_ring.sv rtl/completion_ring.sv rtl/rollout_worker_fsm.sv rtl/rl_runtime_top.sv
+VERILATOR_MODEL_DIR := $(BLDDIR)/verilator/model_obj
+VERILATOR_SIM_DIR := $(BLDDIR)/verilator/sim_obj
+VERILATOR_TEST_DIR := $(BLDDIR)/verilator/test_obj
 
 .PHONY: all clean smoke test test-hw-ring test-all rtl-test rtl-clean verilate sim-rtl test-rtl-bridge clean-verilator bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-prefetch bench-hw-fastpath bench-all ci-build ci-run cuda-compile-check cuda-ptx-check
 
@@ -149,50 +154,47 @@ rtl-clean:
 	rm -f $(BLDDIR)/rtl_tb
 
 verilate:
-	@if command -v verilator >/dev/null 2>&1; then \
+	@if command -v $(VERILATOR) >/dev/null 2>&1; then \
 		mkdir -p $(BLDDIR)/verilator; \
-		verilator --cc --sv \
-			rtl/desc_pkg.sv \
-			rtl/mmio_regs.sv \
-			rtl/desc_ring.sv \
-			rtl/completion_ring.sv \
-			rtl/rollout_worker_fsm.sv \
-			rtl/rl_runtime_top.sv \
+		$(VERILATOR) --cc --sv \
+			$(VERILATOR_RTL_SRCS) \
 			--top-module rl_runtime_top \
-			--Mdir $(BLDDIR)/verilator/obj_dir \
+			--Mdir $(VERILATOR_MODEL_DIR) \
 			-Wno-fatal; \
 	else \
 		echo "Verilator not found. Install verilator to run C/RTL co-simulation."; \
 	fi
 
 sim-rtl:
-	@if command -v verilator >/dev/null 2>&1; then \
+	@if command -v $(VERILATOR) >/dev/null 2>&1; then \
 		mkdir -p $(BLDDIR)/verilator; \
-		verilator --cc --sv rtl/desc_pkg.sv rtl/mmio_regs.sv rtl/desc_ring.sv rtl/completion_ring.sv rtl/rollout_worker_fsm.sv rtl/rl_runtime_top.sv \
+		$(VERILATOR) --cc --sv $(VERILATOR_RTL_SRCS) \
 			--top-module rl_runtime_top \
-			--Mdir $(BLDDIR)/verilator/obj_dir \
+			--Mdir $(VERILATOR_SIM_DIR) \
+			--build \
 			-Wno-fatal \
 			$(if $(TRACE),--trace,) \
-			-CFLAGS "$(if $(TRACE),-DENABLE_VCD,)" \
-			--exe verilator/rtl_bridge.cpp verilator/sim_main.cpp && \
-		$(MAKE) -C $(BLDDIR)/verilator/obj_dir -f Vrl_runtime_top.mk && \
-		$(BLDDIR)/verilator/obj_dir/Vrl_runtime_top; \
+			$(if $(TRACE),-CFLAGS -DENABLE_VCD,) \
+			--exe verilator/rtl_bridge.cpp verilator/sim_main.cpp \
+			-o rtl_bridge_sim && \
+		$(VERILATOR_SIM_DIR)/rtl_bridge_sim; \
 	else \
 		echo "Verilator not found. Install verilator to run C/RTL co-simulation."; \
 	fi
 
 test-rtl-bridge:
-	@if command -v verilator >/dev/null 2>&1; then \
+	@if command -v $(VERILATOR) >/dev/null 2>&1; then \
 		mkdir -p $(BLDDIR)/verilator; \
-		verilator --cc --sv rtl/desc_pkg.sv rtl/mmio_regs.sv rtl/desc_ring.sv rtl/completion_ring.sv rtl/rollout_worker_fsm.sv rtl/rl_runtime_top.sv \
+		$(VERILATOR) --cc --sv $(VERILATOR_RTL_SRCS) \
 			--top-module rl_runtime_top \
-			--Mdir $(BLDDIR)/verilator/obj_dir \
+			--Mdir $(VERILATOR_TEST_DIR) \
+			--build \
 			-Wno-fatal \
 			$(if $(TRACE),--trace,) \
-			-CFLAGS "$(if $(TRACE),-DENABLE_VCD,)" \
-			--exe verilator/rtl_bridge.cpp verilator/test_rtl_bridge.cpp && \
-		$(MAKE) -C $(BLDDIR)/verilator/obj_dir -f Vrl_runtime_top.mk && \
-		$(BLDDIR)/verilator/obj_dir/Vrl_runtime_top; \
+			$(if $(TRACE),-CFLAGS -DENABLE_VCD,) \
+			--exe verilator/rtl_bridge.cpp verilator/test_rtl_bridge.cpp \
+			-o rtl_bridge_tests && \
+		$(VERILATOR_TEST_DIR)/rtl_bridge_tests; \
 	else \
 		echo "Verilator not found. Install verilator to run C/RTL co-simulation."; \
 	fi
