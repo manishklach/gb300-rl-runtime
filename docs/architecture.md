@@ -209,6 +209,24 @@ for a few cycles.
 The longer-term direction is C + Verilator co-simulation so the software
 submit path can drive the RTL descriptor engine directly.
 
+## C/RTL Co-Simulation
+
+The Verilator bridge extends the repo from “software and RTL in the
+same tree” to “software actively driving the RTL model.”
+
+What it proves:
+
+- software and RTL share a descriptor contract
+- host submission can drive the RTL descriptor engine
+- the RTL worker can produce completions the host can observe
+- completion backpressure can be tested from the host side
+
+What it does not prove:
+
+- real GPU execution
+- transformer math correctness
+- GB300 hardware behavior
+
 ## Instrumentation
 
 Three layers of instrumentation, each adding more detail:

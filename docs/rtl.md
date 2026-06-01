@@ -115,6 +115,35 @@ The model therefore guarantees:
 That gives one fast protocol-level regression loop before bringing in
 co-simulation.
 
+## Verilator Bridge
+
+The repo now also includes a C++ Verilator bridge around
+`rl_runtime_top`.
+
+Bridge API:
+
+- `reset()`
+- `tick()`
+- `submit_decode(...)`
+- `submit_stop()`
+- `poll_completion(...)`
+- `set_completion_ready(...)`
+
+Expected co-sim output:
+
+```text
+RTL co-sim basic decode: PASS
+RTL co-sim reward boundary: PASS
+RTL co-sim completion backpressure: PASS
+RTL bridge tests: PASS
+```
+
+If enabled with tracing, the bridge writes:
+
+```text
+build/rtl_bridge.vcd
+```
+
 ## Roadmap
 
 - `v0.1`: basic descriptor engine

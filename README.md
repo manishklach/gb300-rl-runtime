@@ -307,6 +307,42 @@ It does not model:
 | RTL transformer compute | not implemented |
 | Verilator C co-sim | planned |
 
+## C + Verilator Co-Simulation
+
+The repo now includes a Verilator bridge that lets the host-side C++
+simulation submit descriptors into the RTL descriptor engine and observe
+completions.
+
+```text
+C++ RtlRuntimeBridge
+  -> Verilated rl_runtime_top
+  -> RTL desc_ring
+  -> RTL rollout_worker_fsm
+  -> RTL completion_ring
+  -> C++ completion polling
+```
+
+Commands:
+
+```bash
+make verilate
+make sim-rtl
+make test-rtl-bridge
+```
+
+| Layer | Status |
+|---|---|
+| C/CUDA runtime | implemented / experimental |
+| Hardware descriptor path | implemented |
+| RTL descriptor engine | implemented |
+| C + Verilator bridge | implemented |
+| Real transformer compute in RTL | not implemented |
+| GB300 hardware validation | not implemented |
+
+This co-simulation validates the descriptor/control-plane contract. It
+does not validate real GPU execution, GB300 hardware behavior, or
+transformer math.
+
 ## Status Honesty
 
 | Layer | Status |
@@ -329,6 +365,7 @@ It does not model:
 | `docs/hotpath.md` | Every operation classified as init vs hot path |
 | `docs/metrics.md` | Target metrics and benchmark commands (all benchmarks) |
 | `docs/rtl.md` | RTL control-plane scope, module map, ring logic, and roadmap |
+| `docs/verilator_bridge.md` | Verilator bridge API, signal mapping, tests, and limitations |
 | `docs/tracing.md` | Trace event types, latency pairs, example output |
 | `docs/gpu_scheduler.md` | GPU-resident rollout scheduler design and comparison |
 | `docs/decode_microkernel.md` | Status and intent of the fixed-shape decode microkernel scaffold |
@@ -348,6 +385,9 @@ make test          # smoke tests + CUDA-backed unit tests where supported
 make test-all      # software tests + RTL tests if iverilog is installed
 make test-hw-ring  # CPU-only hardware fastpath tests
 make rtl-test      # RTL descriptor-engine testbench
+make verilate      # generate Verilator model for rl_runtime_top
+make sim-rtl       # basic C++/RTL co-simulation run
+make test-rtl-bridge # multi-case C++/RTL co-simulation tests
 make bench         # benchmark: 1M tokens through ring+worker
 make bench-pipeline # benchmark: full RL pipeline with rollouts, state machine, reward, hot-path guards
 make bench-trace   # benchmark with nanosecond tracing + latency percentiles
@@ -364,6 +404,7 @@ make ci-run             # CPU-only verification path used by GitHub Actions
 make cuda-compile-check # compile CUDA translation units with nvcc, no GPU execution
 make cuda-ptx-check     # emit PTX for core CUDA translation units, no GPU execution
 make rtl-clean          # remove RTL simulator artifact
+make clean-verilator    # remove generated Verilator files
 ```
 
 `cuda-compile-check` and `cuda-ptx-check` still require `nvcc`, but they
