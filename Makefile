@@ -60,6 +60,9 @@ VERILATOR_RTL_SRCS := rtl/desc_pkg.sv rtl/mmio_regs.sv rtl/desc_ring.sv rtl/comp
 VERILATOR_MODEL_DIR := $(BLDDIR)/verilator/model_obj
 VERILATOR_SIM_DIR := $(BLDDIR)/verilator/sim_obj
 VERILATOR_TEST_DIR := $(BLDDIR)/verilator/test_obj
+VERILATOR_BRIDGE_SRC := $(abspath verilator/rtl_bridge.cpp)
+VERILATOR_SIM_MAIN_SRC := $(abspath verilator/sim_main.cpp)
+VERILATOR_TEST_MAIN_SRC := $(abspath verilator/test_rtl_bridge.cpp)
 
 .PHONY: all clean smoke test test-hw-ring test-all rtl-test rtl-clean verilate sim-rtl test-rtl-bridge clean-verilator bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-prefetch bench-hw-fastpath bench-all ci-build ci-run cuda-compile-check cuda-ptx-check
 
@@ -175,7 +178,7 @@ sim-rtl:
 			-Wno-fatal \
 			$(if $(TRACE),--trace,) \
 			$(if $(TRACE),-CFLAGS -DENABLE_VCD,) \
-			--exe verilator/rtl_bridge.cpp verilator/sim_main.cpp \
+			--exe $(VERILATOR_BRIDGE_SRC) $(VERILATOR_SIM_MAIN_SRC) \
 			-o rtl_bridge_sim && \
 		$(VERILATOR_SIM_DIR)/rtl_bridge_sim; \
 	else \
@@ -192,7 +195,7 @@ test-rtl-bridge:
 			-Wno-fatal \
 			$(if $(TRACE),--trace,) \
 			$(if $(TRACE),-CFLAGS -DENABLE_VCD,) \
-			--exe verilator/rtl_bridge.cpp verilator/test_rtl_bridge.cpp \
+			--exe $(VERILATOR_BRIDGE_SRC) $(VERILATOR_TEST_MAIN_SRC) \
 			-o rtl_bridge_tests && \
 		$(VERILATOR_TEST_DIR)/rtl_bridge_tests; \
 	else \
