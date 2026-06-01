@@ -1,4 +1,4 @@
-# v0.3.0 — RTL Descriptor Engine for RL Inference Control Plane
+# v0.4.0 — RTL Descriptor Engine for RL Inference Control Plane
 
 - Added SystemVerilog descriptor package.
 - Added descriptor ring and completion ring.
