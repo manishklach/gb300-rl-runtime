@@ -14,6 +14,21 @@ namespace {
 constexpr int kDescWords = 6;
 constexpr int kCompWords = 2;
 
+static uint64_t bit_mask(int width)
+{
+    if (width >= 64)
+        return ~0ULL;
+    return (1ULL << width) - 1ULL;
+}
+
+static uint64_t extract_bits(QData value, int lsb, int width)
+{
+    uint64_t sliced = ((uint64_t)value) >> lsb;
+    if (width < 64)
+        sliced &= bit_mask(width);
+    return sliced;
+}
+
 static uint64_t extract_bits(const VlWide<kCompWords> &words, int lsb, int width)
 {
     const int word = lsb / 32;
@@ -22,7 +37,7 @@ static uint64_t extract_bits(const VlWide<kCompWords> &words, int lsb, int width
     if (shift + width > 32 && word + 1 < kCompWords)
         value |= ((uint64_t)words[word + 1]) << (32 - shift);
     if (width < 64)
-        value &= ((1ULL << width) - 1ULL);
+        value &= bit_mask(width);
     return value;
 }
 
