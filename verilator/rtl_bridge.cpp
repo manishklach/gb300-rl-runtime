@@ -121,21 +121,24 @@ void RtlRuntimeBridge::pack_desc(uint8_t opcode,
     for (int i = 0; i < kDescWords; i++)
         top_->host_desc[i] = 0;
 
+    // SystemVerilog packed structs place the first declared field in the
+    // most-significant bits of the flattened vector. Verilator exposes
+    // `host_desc` as 32-bit words with word 0 holding bits [31:0].
     top_->host_desc[0] =
-        (uint32_t)opcode |
-        ((uint32_t)flags << 8) |
-        ((uint32_t)rollout_id << 16);
+        (uint32_t)reserved |
+        ((uint32_t)reward_model_id << 16);
     top_->host_desc[1] =
-        (uint32_t)kv_arena_id |
-        ((uint32_t)prefix_id << 16);
-    top_->host_desc[2] = kv_offset;
-    top_->host_desc[3] = delta_offset;
+        (uint32_t)max_tokens |
+        ((uint32_t)seq_len << 16);
+    top_->host_desc[2] = delta_offset;
+    top_->host_desc[3] = kv_offset;
     top_->host_desc[4] =
-        (uint32_t)seq_len |
-        ((uint32_t)max_tokens << 16);
+        (uint32_t)prefix_id |
+        ((uint32_t)kv_arena_id << 16);
     top_->host_desc[5] =
-        (uint32_t)reward_model_id |
-        ((uint32_t)reserved << 16);
+        (uint32_t)rollout_id |
+        ((uint32_t)flags << 16) |
+        ((uint32_t)opcode << 24);
 }
 
 bool RtlRuntimeBridge::host_desc_ready() const
@@ -202,10 +205,12 @@ bool RtlRuntimeBridge::poll_completion(RtlCompletion *out)
     if (!host_comp_valid() || !out)
         return false;
 
-    out->rollout_id = (uint16_t)extract_bits(top_->host_comp, 0, 16);
-    out->status = (uint8_t)extract_bits(top_->host_comp, 16, 8);
-    out->final_seq_len = (uint16_t)extract_bits(top_->host_comp, 24, 16);
-    out->reward_id = (uint16_t)extract_bits(top_->host_comp, 40, 16);
+    // completion_t is also a packed struct, so the first field sits in
+    // the high bits of the flattened 56-bit bus.
+    out->reward_id = (uint16_t)extract_bits(top_->host_comp, 0, 16);
+    out->final_seq_len = (uint16_t)extract_bits(top_->host_comp, 16, 16);
+    out->status = (uint8_t)extract_bits(top_->host_comp, 32, 8);
+    out->rollout_id = (uint16_t)extract_bits(top_->host_comp, 40, 16);
 
     if (top_->host_comp_ready)
         tick();
