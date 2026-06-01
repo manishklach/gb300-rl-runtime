@@ -8,11 +8,27 @@ per-token hot path.  Persistent GPU workers are launched once at init.
 `gb300-rl-runtime` is a close-to-metal C/CUDA + RTL lab for RL
 inference control planes.
 
+## Why This Matters
+
+This repo studies the control plane of RL inference: how rollout work
+is described, submitted, backpressured, progressed, and completed
+without per-token CPU micromanagement.
+
 It models the path from host runtime descriptors to hardware-style
 queues:
 
 ```text
-C runtime -> descriptor ring -> doorbell -> persistent worker / RTL FSM -> completion ring
+C submit API
+  ↓
+hardware descriptor
+  ↓
+command ring + doorbell
+  ↓
+persistent worker / RTL FSM
+  ↓
+completion ring
+  ↓
+host observes completion
 ```
 
 The goal is to study how RL inference work should be submitted,
@@ -305,7 +321,7 @@ It does not model:
 | RTL descriptor engine | implemented as control-plane model |
 | RTL worker FSM | fake decode / control-plane simulation |
 | RTL transformer compute | not implemented |
-| Verilator C co-sim | planned |
+| Verilator C co-sim | implemented |
 
 ## C + Verilator Co-Simulation
 
@@ -330,6 +346,15 @@ make sim-rtl
 make test-rtl-bridge
 ```
 
+Target passing output:
+
+```text
+RTL co-sim basic decode: PASS
+RTL co-sim reward boundary: PASS
+RTL co-sim completion backpressure: PASS
+RTL bridge tests: PASS
+```
+
 | Layer | Status |
 |---|---|
 | C/CUDA runtime | implemented / experimental |
@@ -341,7 +366,9 @@ make test-rtl-bridge
 
 This co-simulation validates the descriptor/control-plane contract. It
 does not validate real GPU execution, GB300 hardware behavior, or
-transformer math.
+transformer math. The current bridge validates a shared logical
+descriptor contract, not yet a byte-identical 64-byte wire format; see
+`docs/descriptor_contract.md`.
 
 ## Status Honesty
 
@@ -355,7 +382,7 @@ transformer math.
 | RTL worker FSM | fake decode / control-plane model |
 | RTL transformer compute | not implemented |
 | GB300 hardware validation | not implemented |
-| C + Verilator bridge | next |
+| C + Verilator bridge | implemented |
 
 ## Documentation
 
@@ -366,6 +393,7 @@ transformer math.
 | `docs/metrics.md` | Target metrics and benchmark commands (all benchmarks) |
 | `docs/rtl.md` | RTL control-plane scope, module map, ring logic, and roadmap |
 | `docs/verilator_bridge.md` | Verilator bridge API, signal mapping, tests, and limitations |
+| `docs/descriptor_contract.md` | Current C, RTL, and bridge descriptor/completion contract, plus the 64-byte unification roadmap |
 | `docs/tracing.md` | Trace event types, latency pairs, example output |
 | `docs/gpu_scheduler.md` | GPU-resident rollout scheduler design and comparison |
 | `docs/decode_microkernel.md` | Status and intent of the fixed-shape decode microkernel scaffold |

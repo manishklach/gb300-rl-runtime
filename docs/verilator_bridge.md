@@ -37,6 +37,12 @@ make test-rtl-bridge
 The bridge maps host-side fields into the packed RTL descriptor port and
 unpacks the completion port back into `RtlCompletion`.
 
+The bridge currently maps between the software-side hardware descriptor
+intent and the RTL's smaller packed control-plane format. That means the
+bridge is validating semantic agreement, not a byte-identical shared
+wire format. The field-by-field contract and remaining gaps are tracked
+in `docs/descriptor_contract.md`.
+
 Descriptor mapping:
 
 - opcode -> `DESC_OP_DECODE`

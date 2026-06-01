@@ -43,6 +43,12 @@ RTL control-plane model
 The RTL descriptor is intentionally fixed and packed. The goal is to
 make queue traffic explicit and deterministic, not configurable.
 
+The important current limitation is that the RTL descriptor is not yet
+the same byte-level wire format as the 64-byte software-side
+`hw_desc_t`. The co-simulation bridge validates a shared logical
+control-plane contract today, while the repo still carries separate C
+and RTL physical encodings. See `docs/descriptor_contract.md`.
+
 Key fields:
 
 - opcode
