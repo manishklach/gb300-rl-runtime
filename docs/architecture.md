@@ -182,6 +182,33 @@ latencies for 8 paired event types with p50/p90/p99 percentiles.
 
 This makes latency regressions visible per-commit.
 
+## RTL Control-Plane Model
+
+The repo also contains a SystemVerilog control-plane model under `rtl/`.
+This exists so the queueing protocol can be exercised as hardware logic
+without pretending to model transformer compute or GPU internals.
+
+Relationship to the C/CUDA runtime:
+
+- software fast path:
+  `infer_submit_decode() -> hw_desc_t -> hw_ring -> mmio_write32()`
+- RTL model:
+  `host_desc -> desc_ring -> rollout_worker_fsm -> completion_ring`
+
+The ownership model maps cleanly:
+
+- software producer `tail` ownership corresponds to `push_valid/push_ready`
+- software consumer `head` ownership corresponds to `pop_valid/pop_ready`
+- completion backpressure in software maps to stalled `host_comp_ready`
+  in RTL
+
+Completion backpressure matters because a host-facing completion path
+must never silently drop results just because downstream is not ready
+for a few cycles.
+
+The longer-term direction is C + Verilator co-simulation so the software
+submit path can drive the RTL descriptor engine directly.
+
 ## Instrumentation
 
 Three layers of instrumentation, each adding more detail:
@@ -213,6 +240,10 @@ include/
   trace.h           Ring-buffer tracing (10 event types)
   reward.h          SPSC reward descriptor ring
   kv_prefix.h       Copy-on-write prefix KV
+  hw_desc.h         64-byte hardware-facing descriptor
+  hw_ring.h         Cacheline-owned hardware command/done rings
+  infer_submit.h    Host submit API for the hardware fast path
+  mmio.h            MMIO-style doorbell helpers
 
 src/
   ring.c            Ring allocation in coherent memory
@@ -226,6 +257,9 @@ src/
   trace.c           Trace push + pair-latency report
   reward.c          Reward ring + mock scoring
   kv_prefix.c       Prefix/branch register + refcount
+  hw_ring.c         Hardware-facing ring allocation and atomics
+  infer_submit.c    Build descriptor and ring MMIO-style doorbell
+  mmio.c            Translation-unit anchor for MMIO helpers
 
 cu/
   worker.cu         Persistent GPU decode worker (1 warp/SM)
@@ -239,9 +273,11 @@ bench/
   bench_trace_pipeline.cu  Pipeline benchmark with tracing
   bench_cow_prefix.cu      COW prefix KV memory savings benchmark
   bench_control_tax.cu     Control-plane tax comparison benchmark
+  bench_hw_fastpath.c      Hardware descriptor / doorbell batching benchmark
 
 test/
   test_bench.cu     11 unit tests + GPU pipeline test
+  test_hw_ring.c    Hardware fastpath tests
 
 lab/
   01_false_sharing  Cache line contention (C, pthreads)
@@ -249,4 +285,14 @@ lab/
   03_hugepage_tlb   4K vs 2M page TLB comparison (C, mmap)
   04_syscall_vs_poll eventfd vs polling cost (C, eventfd)
   05_doorbell_mock  Producer/consumer doorbell (C, atomics)
+  06_memory_ordering Publication ordering lab
+
+rtl/
+  desc_pkg.sv       Packed descriptor and completion definitions
+  mmio_regs.sv      MMIO-style doorbell register model
+  desc_ring.sv      Descriptor ready/valid ring
+  completion_ring.sv Completion ready/valid ring
+  rollout_worker_fsm.sv Fake decode / control-plane worker
+  rl_runtime_top.sv Top-level RTL composition
+  tb_rl_runtime_top.sv Basic RTL testbench
 ```

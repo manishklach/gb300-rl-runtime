@@ -1,0 +1,21 @@
+name: rtl
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+jobs:
+  rtl-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install iverilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iverilog
+
+      - name: Run RTL testbench
+        run: make rtl-test

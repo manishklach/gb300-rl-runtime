@@ -56,7 +56,7 @@ CUDA_CHECK_SRCS := $(MAIN_SRC) $(CU_SRCS) $(TESTDIR)/test_bench.cu \
                    $(BENCHDIR)/bench_prefetch.cu
 CUDA_PTX_SRCS := $(CU_SRCS) $(BENCHDIR)/bench_decode_microkernel.cu $(BENCHDIR)/bench_prefetch.cu
 
-.PHONY: all clean smoke test test-hw-ring bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-prefetch bench-hw-fastpath bench-all ci-build ci-run cuda-compile-check cuda-ptx-check
+.PHONY: all clean smoke test test-hw-ring test-all rtl-test rtl-clean bench bench-pipeline bench-trace bench-cow bench-tax bench-gpu-scheduler bench-decode bench-kv-layout bench-prefetch bench-hw-fastpath bench-all ci-build ci-run cuda-compile-check cuda-ptx-check
 
 all: $(BLDDIR)/libruntime.a $(TEST_TARGET) $(HW_TEST_TARGET) $(BENCH_TARGETS)
 
@@ -125,6 +125,28 @@ test-hw-ring: $(HW_TEST_TARGET)
 
 test: smoke test-hw-ring $(TEST_TARGET)
 	./$(TEST_TARGET)
+
+test-all: test
+	$(MAKE) rtl-test
+
+rtl-test:
+	@if command -v iverilog >/dev/null 2>&1; then \
+		mkdir -p $(BLDDIR); \
+		iverilog -g2012 -o $(BLDDIR)/rtl_tb \
+			rtl/desc_pkg.sv \
+			rtl/mmio_regs.sv \
+			rtl/desc_ring.sv \
+			rtl/completion_ring.sv \
+			rtl/rollout_worker_fsm.sv \
+			rtl/rl_runtime_top.sv \
+			rtl/tb_rl_runtime_top.sv && \
+		vvp $(BLDDIR)/rtl_tb; \
+	else \
+		echo "Install iverilog or use Verilator to run RTL tests."; \
+	fi
+
+rtl-clean:
+	rm -f $(BLDDIR)/rtl_tb
 
 bench: $(TEST_TARGET)
 	./$(TEST_TARGET) --bench 1000000

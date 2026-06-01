@@ -5,6 +5,46 @@ inference at GB300 NVL72 scale.  No page faults, no `malloc`/`free`,
 no **per-token** CUDA kernel launches, no CPU scheduler wakeups in the
 per-token hot path.  Persistent GPU workers are launched once at init.
 
+`gb300-rl-runtime` is a close-to-metal C/CUDA + RTL lab for RL
+inference control planes.
+
+It models the path from host runtime descriptors to hardware-style
+queues:
+
+```text
+C runtime -> descriptor ring -> doorbell -> persistent worker / RTL FSM -> completion ring
+```
+
+The goal is to study how RL inference work should be submitted,
+progressed, backpressured, and completed without per-token CPU
+micromanagement.
+
+## Repo Stack
+
+```text
+┌──────────────────────┐
+│ C/CUDA Runtime       │
+│ infer_submit_decode()│
+└──────────┬───────────┘
+           │ hw_desc_t
+           ▼
+┌──────────────────────┐
+│ Hardware Fast Path   │
+│ ring + MMIO doorbell │
+└──────────┬───────────┘
+           │ descriptor contract
+           ▼
+┌──────────────────────┐
+│ RTL Descriptor Engine│
+│ desc_ring + FSM      │
+└──────────┬───────────┘
+           │ completion_t
+           ▼
+┌──────────────────────┐
+│ Host Completion Path │
+└──────────────────────┘
+```
+
 ## v0.2.1: Correctness and Benchmark Honesty
 
 This release is a stabilization pass focused on queue correctness,
@@ -218,6 +258,69 @@ This is a hardware-facing model, not direct access to NVIDIA internal
 GPU doorbells. The point is to make the queueing discipline, descriptor
 shape, and doorbell tradeoffs explicit and measurable.
 
+## RTL Descriptor Engine
+
+The repo now also includes an RTL model of the hardware queue/control-plane
+protocol. It mirrors the C hardware-facing fast path:
+
+```text
+C infer_submit_decode()
+    |
+    v
+hw_desc_t / command ring
+    |
+    v
+RTL desc_ring
+    |
+    v
+rollout_worker_fsm
+    |
+    v
+completion_ring
+    |
+    v
+host observes completion
+```
+
+It models:
+
+- fixed descriptors
+- descriptor ring
+- MMIO doorbell register
+- rollout worker FSM
+- completion ring
+- ready/valid backpressure
+
+It does not model:
+
+- real transformer kernels
+- tensor cores
+- GB300 internals
+- NVIDIA hardware doorbells
+
+| Layer | Status |
+|---|---|
+| C/CUDA runtime fast path | implemented / experimental |
+| Hardware descriptor format | implemented |
+| RTL descriptor engine | implemented as control-plane model |
+| RTL worker FSM | fake decode / control-plane simulation |
+| RTL transformer compute | not implemented |
+| Verilator C co-sim | planned |
+
+## Status Honesty
+
+| Layer | Status |
+|---|---|
+| C descriptor ring | implemented |
+| C hardware fast path | implemented |
+| COW prefix KV | implemented / benchmarked |
+| RL pipeline | implemented / simulated |
+| RTL descriptor ring | implemented |
+| RTL worker FSM | fake decode / control-plane model |
+| RTL transformer compute | not implemented |
+| GB300 hardware validation | not implemented |
+| C + Verilator bridge | next |
+
 ## Documentation
 
 | File | What it covers |
@@ -225,11 +328,14 @@ shape, and doorbell tradeoffs explicit and measurable.
 | `docs/architecture.md` | Full architecture map, hot path vs init path, component interactions |
 | `docs/hotpath.md` | Every operation classified as init vs hot path |
 | `docs/metrics.md` | Target metrics and benchmark commands (all benchmarks) |
+| `docs/rtl.md` | RTL control-plane scope, module map, ring logic, and roadmap |
 | `docs/tracing.md` | Trace event types, latency pairs, example output |
 | `docs/gpu_scheduler.md` | GPU-resident rollout scheduler design and comparison |
 | `docs/decode_microkernel.md` | Status and intent of the fixed-shape decode microkernel scaffold |
 | `docs/part3-metal-blog.md` | Deep dive on PTX, `cp.async`, memory ordering, host flush semantics, and the v0.4 roadmap |
 | `docs/v0.2.2-roadmap.md` | File-by-file plan for the first real hardware-close decode path |
+| `rtl/README.md` | How to run and reason about the RTL descriptor engine |
+| `docs/release-notes-v0.3-rtl.md` | RTL-focused release-note draft |
 
 ## Build
 
@@ -239,7 +345,9 @@ Requires Linux, CUDA 12.x+, and `libnuma-dev` for the full runtime.
 make               # build library + test bench + all benchmarks
 make smoke         # CPU-only smoke tests for ring/overflow correctness
 make test          # smoke tests + CUDA-backed unit tests where supported
+make test-all      # software tests + RTL tests if iverilog is installed
 make test-hw-ring  # CPU-only hardware fastpath tests
+make rtl-test      # RTL descriptor-engine testbench
 make bench         # benchmark: 1M tokens through ring+worker
 make bench-pipeline # benchmark: full RL pipeline with rollouts, state machine, reward, hot-path guards
 make bench-trace   # benchmark with nanosecond tracing + latency percentiles
@@ -255,6 +363,7 @@ make ci-build           # CPU-only build path used by GitHub Actions
 make ci-run             # CPU-only verification path used by GitHub Actions
 make cuda-compile-check # compile CUDA translation units with nvcc, no GPU execution
 make cuda-ptx-check     # emit PTX for core CUDA translation units, no GPU execution
+make rtl-clean          # remove RTL simulator artifact
 ```
 
 `cuda-compile-check` and `cuda-ptx-check` still require `nvcc`, but they
