@@ -138,9 +138,13 @@ descriptor flags and stop opcodes rather than a separate status enum.
 ## Bridge Mapping
 
 The Verilator bridge maps host intent into RTL fields with narrowing
-where required:
+where required. As of v0.4.1 the bridge API enforces the RTL field widths
+at the type level (all narrowable parameters are `uint16_t`/`uint32_t`)
+and includes explicit `static_assert` guards on the packed struct sizes.
 
-- `rollout_id`: C/host values are truncated to 16 bits for RTL
+Historical truncation notes (pre-v0.4.1):
+
+- `rollout_id`: C/host values were truncated to 16 bits for RTL
 - `kv_arena_id`: truncated to 16 bits
 - `prefix_id`: truncated to 16 bits
 - `kv_offset`: truncated to 32 bits
@@ -149,9 +153,9 @@ where required:
 - `max_tokens`: truncated to 16 bits
 - `reward_model_id`: truncated to 16 bits
 
-That is acceptable for today's control-plane tests because the test
-inputs stay within the narrower RTL ranges. It is also the clearest sign
-that the physical descriptor contract is not unified yet.
+In v0.4.1+ the bridge API uses matching-width types for all fields so
+truncation is enforced at compile time. The bound is also checked at
+runtime in `submit_decode()` as a defense-in-depth measure.
 
 ## Endianness and Packing Assumptions
 

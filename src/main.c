@@ -1,6 +1,7 @@
 #include "ring.h"
 #include "arena.h"
 #include "completion.h"
+#include "cuda_utils.h"
 #include "decode_batch.h"
 #include "numa.h"
 #include "attention_decode.h"
@@ -48,8 +49,10 @@ get_sm_count(int dev_id) {
 
 int
 runtime_init(Runtime *rt, int dev_id, size_t arena_size, size_t block_size) {
+  memset(rt, 0, sizeof(*rt));
   rt->dev_id = dev_id;
-  cudaSetDevice(dev_id);
+
+  CUDA_CHECK(cudaSetDevice(dev_id));
   rt->num_sms = get_sm_count(dev_id);
 
   /* allocate command ring in NUMA-local coherent memory */
@@ -60,33 +63,33 @@ runtime_init(Runtime *rt, int dev_id, size_t arena_size, size_t block_size) {
   }
 
   /* allocate completion ring (also coherent) */
-  rt->comp_ring = (CompletionRing *)ring_create();
+  rt->comp_ring = comp_ring_create();
   if (!rt->comp_ring) {
     fprintf(stderr, "failed to create completion ring\n");
-    return -1;
+    goto cleanup;
   }
 
   /* initialise KV arena */
   arena_init(&rt->kv_arena, arena_size, block_size);
 
   /* allocate device-side step counter */
-  cudaMalloc(&rt->d_step_count, sizeof(uint64_t));
-  cudaMemset(rt->d_step_count, 0, sizeof(uint64_t));
+  CUDA_CHECK(cudaMalloc(&rt->d_step_count, sizeof(uint64_t)));
+  CUDA_CHECK(cudaMemset(rt->d_step_count, 0, sizeof(uint64_t)));
   rt->io_slots = RING_SIZE;
   if (model_state_init(&rt->model_state, rt->io_slots) != 0) {
     fprintf(stderr, "failed to initialize model state\n");
-    return -1;
+    goto cleanup;
   }
   if (query_producer_init(&rt->d_query_proj) != 0) {
     fprintf(stderr, "failed to initialize query producer\n");
-    return -1;
+    goto cleanup;
   }
-  cudaMalloc(&rt->d_query_buf, rt->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(__half));
-  cudaMalloc(&rt->d_output_buf, rt->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(float));
-  cudaMemset(rt->d_output_buf, 0, rt->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(float));
+  CUDA_CHECK(cudaMalloc(&rt->d_query_buf, rt->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(__half)));
+  CUDA_CHECK(cudaMalloc(&rt->d_output_buf, rt->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(float)));
+  CUDA_CHECK(cudaMemset(rt->d_output_buf, 0, rt->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(float)));
 
   /* allocate device-side sampling state (one per trajectory, here 1) */
-  cudaMalloc(&rt->d_sample_st, sizeof(SampleState));
+  CUDA_CHECK(cudaMalloc(&rt->d_sample_st, sizeof(SampleState)));
   SampleState h_st;
   memset(&h_st, 0, sizeof(h_st));
   h_st.rng_state[0] = 42;
@@ -97,10 +100,22 @@ runtime_init(Runtime *rt, int dev_id, size_t arena_size, size_t block_size) {
   h_st.top_k         = 50;
   h_st.top_p         = 0.9f;
   h_st.vocab_size    = MAX_VOCAB_SIZE;
-  cudaMemcpy(rt->d_sample_st, &h_st, sizeof(SampleState),
-             cudaMemcpyHostToDevice);
+  CUDA_CHECK(cudaMemcpy(rt->d_sample_st, &h_st, sizeof(SampleState),
+                        cudaMemcpyHostToDevice));
 
   return 0;
+
+cleanup:
+  if (rt->d_sample_st)   cudaFree(rt->d_sample_st);
+  if (rt->d_output_buf)  cudaFree(rt->d_output_buf);
+  if (rt->d_query_buf)   cudaFree(rt->d_query_buf);
+  if (rt->d_step_count)  cudaFree(rt->d_step_count);
+  if (rt->d_query_proj)  query_producer_destroy(rt->d_query_proj);
+  model_state_destroy(&rt->model_state);
+  if (rt->cmd_ring)      ring_destroy(rt->cmd_ring);
+  if (rt->comp_ring)     comp_ring_destroy(rt->comp_ring);
+  arena_destroy(&rt->kv_arena);
+  return -1;
 }
 
 /* Dispatch one trajectory of n_steps decode steps through the ring. */
@@ -184,7 +199,7 @@ runtime_shutdown(Runtime *rt) {
   cudaFree(rt->d_query_buf);
   cudaFree(rt->d_output_buf);
   ring_destroy(rt->cmd_ring);
-  ring_destroy((CommandRing *)rt->comp_ring);
+  comp_ring_destroy(rt->comp_ring);
   arena_destroy(&rt->kv_arena);
 }
 

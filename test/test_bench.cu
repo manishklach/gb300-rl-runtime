@@ -10,6 +10,7 @@
 #include "ring.h"
 #include "arena.h"
 #include "completion.h"
+#include "cuda_utils.h"
 #include "prefetch.h"
 #include "sample.h"
 #include "rollout.h"
@@ -341,42 +342,52 @@ bench_ring(void) {
 
 /* ─── Full pipeline GPU test ───────────────────────────────────── */
 
-static void
+static int
 bench_full_pipeline(int n_tokens) {
   printf("\n  Full pipeline (%d tokens) ...\n", n_tokens);
 
   int dev_id = 0;
-  cudaSetDevice(dev_id);
+  int sms = 0;
+  CUDA_CHECK(cudaSetDevice(dev_id));
   cudaDeviceProp prop;
-  cudaGetDeviceProperties(&prop, dev_id);
-  int sms = prop.multiProcessorCount;
+  CUDA_CHECK(cudaGetDeviceProperties(&prop, dev_id));
+  sms = prop.multiProcessorCount;
 
   /* allocate rings */
   CommandRing    *cmd_ring   = ring_create();
-  CompletionRing *comp_ring  = (CompletionRing *)ring_create();
-  assert(cmd_ring && comp_ring);
+  CompletionRing *comp_ring  = comp_ring_create();
+  if (!cmd_ring || !comp_ring) {
+    fprintf(stderr, "failed to create rings\n");
+    return -1;
+  }
 
   /* KV arena: 256 MB */
   KVArena arena;
   arena_init(&arena, 256UL << 20, 16384);
 
   /* device state */
-  uint64_t *d_step_count;
-  cudaMalloc(&d_step_count, sizeof(uint64_t));
-  cudaMemset(d_step_count, 0, sizeof(uint64_t));
+  uint64_t *d_step_count = NULL;
+  CUDA_CHECK(cudaMalloc(&d_step_count, sizeof(uint64_t)));
+  CUDA_CHECK(cudaMemset(d_step_count, 0, sizeof(uint64_t)));
 
-  SampleState *d_sample_st;
-  cudaMalloc(&d_sample_st, sizeof(SampleState));
+  SampleState *d_sample_st = NULL;
+  CUDA_CHECK(cudaMalloc(&d_sample_st, sizeof(SampleState)));
   ModelStateBuffers model_state;
   memset(&model_state, 0, sizeof(model_state));
   __half *d_query_proj = NULL;
-  __half *d_query_buf;
-  float *d_output_buf;
-  assert(model_state_init(&model_state, RING_SIZE) == 0);
-  assert(query_producer_init(&d_query_proj) == 0);
-  cudaMalloc(&d_query_buf, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(__half));
-  cudaMalloc(&d_output_buf, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(float));
-  cudaMemset(d_output_buf, 0, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(float));
+  __half *d_query_buf = NULL;
+  float *d_output_buf = NULL;
+  if (model_state_init(&model_state, RING_SIZE) != 0) {
+    fprintf(stderr, "failed to initialize model state\n");
+    goto cleanup;
+  }
+  if (query_producer_init(&d_query_proj) != 0) {
+    fprintf(stderr, "failed to initialize query producer\n");
+    goto cleanup;
+  }
+  CUDA_CHECK(cudaMalloc(&d_query_buf, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(__half)));
+  CUDA_CHECK(cudaMalloc(&d_output_buf, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(float)));
+  CUDA_CHECK(cudaMemset(d_output_buf, 0, RING_SIZE * DECODE_FIXED_HEAD_DIM * sizeof(float)));
   SampleState h_st;
   memset(&h_st, 0, sizeof(h_st));
   h_st.rng_state[0] = 42;
@@ -387,13 +398,15 @@ bench_full_pipeline(int n_tokens) {
   h_st.top_k         = 50;
   h_st.top_p         = 0.9f;
   h_st.vocab_size    = MAX_VOCAB_SIZE;
-  cudaMemcpy(d_sample_st, &h_st, sizeof(SampleState), cudaMemcpyHostToDevice);
+  CUDA_CHECK(cudaMemcpy(d_sample_st, &h_st, sizeof(SampleState), cudaMemcpyHostToDevice));
 
   /* launch persistent workers */
-  int smem_size = 3 * 16384;
-  decode_worker<<<sms, 32, smem_size>>>(
-    cmd_ring, &arena, comp_ring, d_sample_st,
-    d_query_buf, d_output_buf, RING_SIZE, d_step_count);
+  {
+    int smem_size = 3 * 16384;
+    decode_worker<<<sms, 32, smem_size>>>(
+      cmd_ring, &arena, comp_ring, d_sample_st,
+      d_query_buf, d_output_buf, RING_SIZE, d_step_count);
+  }
 
   /* pre-acquire KV blocks */
   int64_t kv_ids[128];
@@ -403,14 +416,13 @@ bench_full_pipeline(int n_tokens) {
 
   /* dispatch tokens */
   cudaEvent_t start, stop;
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
-  cudaEventRecord(start);
+  CUDA_CHECK(cudaEventCreate(&start));
+  CUDA_CHECK(cudaEventCreate(&stop));
+  CUDA_CHECK(cudaEventRecord(start));
 
   for (int i = 0; i < n_tokens; i++) {
     uint32_t pos = ring_acquire(cmd_ring, 1);
     if (pos == UINT32_MAX) {
-      /* drain some completions */
       Completion c;
       while (comp_ring_poll(comp_ring, &c));
       pos = ring_acquire(cmd_ring, 1);
@@ -441,13 +453,13 @@ bench_full_pipeline(int n_tokens) {
       completed++;
   }
 
-  cudaEventRecord(stop);
-  cudaEventSynchronize(stop);
+  CUDA_CHECK(cudaEventRecord(stop));
+  CUDA_CHECK(cudaEventSynchronize(stop));
   float ms;
-  cudaEventElapsedTime(&ms, start, stop);
+  CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
 
   uint64_t steps;
-  cudaMemcpy(&steps, d_step_count, sizeof(steps), cudaMemcpyDeviceToHost);
+  CUDA_CHECK(cudaMemcpy(&steps, d_step_count, sizeof(steps), cudaMemcpyDeviceToHost));
 
   printf("  Workers:      %d SMs\n", sms);
   printf("  Wall time:    %.2f ms\n", ms);
@@ -455,17 +467,19 @@ bench_full_pipeline(int n_tokens) {
   printf("  GPU steps:    %lu\n", steps);
 
   /* shutdown */
-  Descriptor sentinel;
-  memset(&sentinel, 0, sizeof(sentinel));
-  sentinel.seq_id = UINT64_MAX;
-  for (int i = 0; i < sms; i++) {
-    uint32_t pos = ring_acquire(cmd_ring, 1);
-    if (pos != UINT32_MAX) {
-      cmd_ring->slots[pos] = sentinel;
-      ring_commit(cmd_ring, 1);
+  {
+    Descriptor sentinel;
+    memset(&sentinel, 0, sizeof(sentinel));
+    sentinel.seq_id = UINT64_MAX;
+    for (int i = 0; i < sms; i++) {
+      uint32_t pos = ring_acquire(cmd_ring, 1);
+      if (pos != UINT32_MAX) {
+        cmd_ring->slots[pos] = sentinel;
+        ring_commit(cmd_ring, 1);
+      }
     }
   }
-  cudaDeviceSynchronize();
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   cudaFree(d_step_count);
   cudaFree(d_sample_st);
@@ -474,10 +488,23 @@ bench_full_pipeline(int n_tokens) {
   cudaFree(d_query_buf);
   cudaFree(d_output_buf);
   ring_destroy(cmd_ring);
-  ring_destroy((CommandRing *)comp_ring);
+  comp_ring_destroy(comp_ring);
   arena_destroy(&arena);
-  cudaEventDestroy(start);
-  cudaEventDestroy(stop);
+  CUDA_CHECK(cudaEventDestroy(start));
+  CUDA_CHECK(cudaEventDestroy(stop));
+  return 0;
+
+cleanup:
+  cudaFree(d_step_count);
+  cudaFree(d_sample_st);
+  cudaFree(d_output_buf);
+  cudaFree(d_query_buf);
+  if (d_query_proj)  query_producer_destroy(d_query_proj);
+  model_state_destroy(&model_state);
+  if (cmd_ring)      ring_destroy(cmd_ring);
+  if (comp_ring)     comp_ring_destroy(comp_ring);
+  arena_destroy(&arena);
+  return -1;
 }
 
 /* ─── New component tests ──────────────────────────────────────── */
@@ -606,14 +633,14 @@ test_warp_broadcast(void) {
   uint64_t h_seq[32], h_cookie[32];
   uint32_t h_off[32];
 
-  cudaMalloc(&d_seq, sizeof(h_seq));
-  cudaMalloc(&d_cookie, sizeof(h_cookie));
-  cudaMalloc(&d_off, sizeof(h_off));
+  CUDA_CHECK(cudaMalloc(&d_seq, sizeof(h_seq)));
+  CUDA_CHECK(cudaMalloc(&d_cookie, sizeof(h_cookie)));
+  CUDA_CHECK(cudaMalloc(&d_off, sizeof(h_off)));
   test_warp_broadcast_kernel<<<1, 32>>>(d_seq, d_off, d_cookie);
-  cudaDeviceSynchronize();
-  cudaMemcpy(h_seq, d_seq, sizeof(h_seq), cudaMemcpyDeviceToHost);
-  cudaMemcpy(h_off, d_off, sizeof(h_off), cudaMemcpyDeviceToHost);
-  cudaMemcpy(h_cookie, d_cookie, sizeof(h_cookie), cudaMemcpyDeviceToHost);
+  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(cudaMemcpy(h_seq, d_seq, sizeof(h_seq), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(h_off, d_off, sizeof(h_off), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(h_cookie, d_cookie, sizeof(h_cookie), cudaMemcpyDeviceToHost));
 
   for (int i = 0; i < 32; i++) {
     assert(h_seq[i] == 0x123456789ABCDEF0ULL);
@@ -788,8 +815,9 @@ main(int argc, char **argv) {
     printf("── Benchmark mode ──\n\n");
     bench_ring();
     if (cuda_is_available()) {
-      cudaSetDevice(0);
-      bench_full_pipeline(n_tokens);
+      CUDA_CHECK(cudaSetDevice(0));
+      if (bench_full_pipeline(n_tokens) != 0)
+        return 1;
     } else {
       printf("  GPU pipeline benchmark: SKIP (no CUDA device)\n");
     }
@@ -817,7 +845,8 @@ main(int argc, char **argv) {
 
   if (cuda_is_available()) {
     printf("\n── Quick pipeline test (1000 tokens) ──\n\n");
-    bench_full_pipeline(1000);
+    if (bench_full_pipeline(1000) != 0)
+      return 1;
   } else {
     printf("\n── Quick pipeline test ──\n\n");
     printf("  SKIP (no CUDA device)\n");

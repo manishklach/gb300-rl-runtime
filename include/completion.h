@@ -32,6 +32,17 @@ typedef struct __attribute__((packed)) {
   uint8_t           pad[60];
 } CompCounter;
 
+_Static_assert(sizeof(CompHead) == 64, "CompHead must be exactly one cache line");
+_Static_assert(sizeof(CompTail) == 64, "CompTail must be exactly one cache line");
+_Static_assert(sizeof(CompCounter) == 64, "CompCounter must be exactly one cache line");
+
+/* Completion status codes matching rtl/desc_pkg.sv completion_t.status */
+enum comp_status {
+    COMP_STATUS_DONE          = 0x01,
+    COMP_STATUS_REWARD_NEEDED = 0x02,
+    COMP_STATUS_STOPPED       = 0xFF,
+};
+
 typedef struct {
   CompHead      cons __attribute__((aligned(64)));  /* CPU writes head */
   CompTail      prod __attribute__((aligned(64)));  /* GPU writes tail */

@@ -8,11 +8,16 @@
 #endif
 
 #include <cstring>
+#include <climits>
 
 namespace {
 
 constexpr int kDescWords = 6;
 constexpr int kCompWords = 2;
+
+/* RTL packed struct width assertions — keep in sync with rtl/desc_pkg.sv */
+static_assert(kDescWords * 32 == 192, "host_desc must hold 192-bit desc_t");
+static_assert(kCompWords * 32 >= 56,  "host_comp must hold 56-bit completion_t");
 
 static uint64_t bit_mask(int width)
 {
@@ -160,6 +165,12 @@ bool RtlRuntimeBridge::submit_decode(uint16_t rollout_id,
                                      uint32_t kv_offset,
                                      uint32_t delta_offset)
 {
+    /* RTL desc_t uses 16-bit fields for all IDs/lengths and 32-bit for offsets.
+     * The host API uses the same widths, so no truncation occurs, but we validate
+     * explicitly to document the contract and catch misuse early. */
+    if (seq_len > 0xFFFF || max_tokens > 0xFFFF) return false;
+    if (kv_offset > 0xFFFFFFFF || delta_offset > 0xFFFFFFFF) return false;
+
     pack_desc(RTL_DESC_OP_DECODE, 0u, rollout_id, kv_arena_id, prefix_id,
               kv_offset, delta_offset, seq_len, max_tokens, reward_model_id, 0u);
 
@@ -179,6 +190,7 @@ bool RtlRuntimeBridge::submit_decode(uint16_t rollout_id,
 bool RtlRuntimeBridge::submit_stop(uint16_t rollout_id)
 {
     pack_desc(RTL_DESC_OP_STOP, 0u, rollout_id, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
+    if (rollout_id > 0xFFFF) return false;
 
     for (int i = 0; !host_desc_ready() && i < 16; i++)
         tick();

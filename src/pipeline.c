@@ -128,10 +128,13 @@ pipeline_release(RolloutPipeline *p, pipeline_q_t q, uint32_t n)
     }
 }
 
-void
+int
 pipeline_set_schedule_policy(RolloutPipeline *p, SchedulePolicy policy)
 {
+    if (policy != SCHED_FIFO)
+        return -1;
     p->policy = policy;
+    return 0;
 }
 
 int
@@ -142,6 +145,17 @@ pipeline_schedule(RolloutPipeline *p, pipeline_q_t q, uint32_t *out_id)
     if (p->policy == SCHED_FIFO)
         return pipeline_pop(p, q, out_id);
 
+    /* ── aspirational non-FIFO policies ──────────────────────────────
+     * SCHED_SHORTEST_REMAINING and SCHED_PREFIX_SHARING are NOT
+     * safe in v0.4.x: the search-then-advance-to-best_idx pattern
+     * in the original implementation skipped every entry between
+     * the current tail and best_idx, silently dropping queued
+     * rollouts.
+     *
+     * Restore after implementing a scheduler that can remove
+     * arbitrary entries without losing queued work.  The original
+     * code is preserved below as a reference algorithm. */
+#if 0
     IdRing *r = &p->queues[q];
     uint32_t t = atomic_load_explicit(&r->cons.tail, memory_order_acquire);
     uint32_t h = atomic_load_explicit(&r->prod.head, memory_order_relaxed);
@@ -185,6 +199,10 @@ pipeline_schedule(RolloutPipeline *p, pipeline_q_t q, uint32_t *out_id)
     atomic_store_explicit(&r->cons.tail, new_tail, memory_order_release);
 
     return 0;
+#else
+    (void)out_id;
+    return -1;
+#endif
 }
 
 uint32_t

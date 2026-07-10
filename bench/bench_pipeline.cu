@@ -6,6 +6,7 @@
 #include "ring.h"
 #include "arena.h"
 #include "completion.h"
+#include "cuda_utils.h"
 #include "decode_batch.h"
 #include "attention_decode.h"
 #include "model_state.h"
@@ -67,10 +68,10 @@ static int bench_init(BenchContext *ctx, int dev_id, int n_rollouts)
     (void)n_rollouts;
     memset(ctx, 0, sizeof(*ctx));
     ctx->dev_id = dev_id;
-    cudaSetDevice(dev_id);
+    CUDA_CHECK(cudaSetDevice(dev_id));
 
     cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, dev_id);
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, dev_id));
     ctx->num_sms = prop.multiProcessorCount;
 
     pipeline_init(&ctx->pipeline);
@@ -79,7 +80,7 @@ static int bench_init(BenchContext *ctx, int dev_id, int n_rollouts)
     kv_prefix_table_init(&ctx->kv_prefix_table);
 
     ctx->cmd_ring  = ring_create();
-    ctx->comp_ring = (CompletionRing *)ring_create();
+    ctx->comp_ring = comp_ring_create();
     if (!ctx->cmd_ring || !ctx->comp_ring) {
         fprintf(stderr, "failed to create rings\n");
         return -1;
@@ -88,22 +89,22 @@ static int bench_init(BenchContext *ctx, int dev_id, int n_rollouts)
     arena_init(&ctx->kv_arena, 256UL << 20, 16384);
     reward_ring_init(&ctx->reward_ring);
 
-    cudaMalloc(&ctx->d_step_count, sizeof(uint64_t));
-    cudaMemset(ctx->d_step_count, 0, sizeof(uint64_t));
+    CUDA_CHECK(cudaMalloc(&ctx->d_step_count, sizeof(uint64_t)));
+    CUDA_CHECK(cudaMemset(ctx->d_step_count, 0, sizeof(uint64_t)));
     ctx->io_slots = RING_SIZE;
     if (model_state_init(&ctx->model_state, ctx->io_slots) != 0) {
         fprintf(stderr, "failed to initialize model state\n");
-        return -1;
+        goto cleanup;
     }
     if (query_producer_init(&ctx->d_query_proj) != 0) {
         fprintf(stderr, "failed to initialize query producer\n");
-        return -1;
+        goto cleanup;
     }
-    cudaMalloc(&ctx->d_query_buf, ctx->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(__half));
-    cudaMalloc(&ctx->d_output_buf, ctx->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(float));
-    cudaMemset(ctx->d_output_buf, 0, ctx->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&ctx->d_query_buf, ctx->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(__half)));
+    CUDA_CHECK(cudaMalloc(&ctx->d_output_buf, ctx->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(float)));
+    CUDA_CHECK(cudaMemset(ctx->d_output_buf, 0, ctx->io_slots * DECODE_FIXED_HEAD_DIM * sizeof(float)));
 
-    cudaMalloc(&ctx->d_sample_st, sizeof(SampleState));
+    CUDA_CHECK(cudaMalloc(&ctx->d_sample_st, sizeof(SampleState)));
     SampleState h_st;
     memset(&h_st, 0, sizeof(h_st));
     h_st.rng_state[0] = 42;
@@ -114,15 +115,28 @@ static int bench_init(BenchContext *ctx, int dev_id, int n_rollouts)
     h_st.top_k         = 50;
     h_st.top_p         = 0.9f;
     h_st.vocab_size    = MAX_VOCAB_SIZE;
-    cudaMemcpy(ctx->d_sample_st, &h_st, sizeof(SampleState), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(ctx->d_sample_st, &h_st, sizeof(SampleState), cudaMemcpyHostToDevice));
 
-    int smem_size = 3 * 16384;
-    decode_worker<<<ctx->num_sms, 32, smem_size>>>(
-        ctx->cmd_ring, &ctx->kv_arena, ctx->comp_ring,
-        ctx->d_sample_st, ctx->d_query_buf, ctx->d_output_buf, ctx->io_slots,
-        ctx->d_step_count);
+    {
+        int smem_size = 3 * 16384;
+        decode_worker<<<ctx->num_sms, 32, smem_size>>>(
+            ctx->cmd_ring, &ctx->kv_arena, ctx->comp_ring,
+            ctx->d_sample_st, ctx->d_query_buf, ctx->d_output_buf, ctx->io_slots,
+            ctx->d_step_count);
+    }
 
     return 0;
+
+cleanup:
+    if (ctx->d_step_count)  cudaFree(ctx->d_step_count);
+    if (ctx->d_sample_st)   cudaFree(ctx->d_sample_st);
+    if (ctx->d_output_buf)  cudaFree(ctx->d_output_buf);
+    if (ctx->d_query_buf)   cudaFree(ctx->d_query_buf);
+    if (ctx->d_query_proj)  query_producer_destroy(ctx->d_query_proj);
+    model_state_destroy(&ctx->model_state);
+    if (ctx->cmd_ring)      ring_destroy(ctx->cmd_ring);
+    if (ctx->comp_ring)     comp_ring_destroy(ctx->comp_ring);
+    return -1;
 }
 
 static void bench_shutdown(BenchContext *ctx)
@@ -149,7 +163,7 @@ static void bench_shutdown(BenchContext *ctx)
     cudaFree(ctx->d_query_buf);
     cudaFree(ctx->d_output_buf);
     ring_destroy(ctx->cmd_ring);
-    ring_destroy((CommandRing *)ctx->comp_ring);
+    comp_ring_destroy(ctx->comp_ring);
     arena_destroy(&ctx->kv_arena);
 }
 

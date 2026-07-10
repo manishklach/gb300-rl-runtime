@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdatomic.h>
 #include "descriptor.h"
+#include "completion.h"
 
 /* Consumer-owned head: next descriptor to read/release. */
 typedef struct __attribute__((packed)) {
@@ -69,3 +70,6 @@ ring_consume(CommandRing *ring, Descriptor *desc) {
 
 CommandRing *ring_create(void);
 void ring_destroy(CommandRing *ring);
+
+CompletionRing *comp_ring_create(void);
+void comp_ring_destroy(CompletionRing *ring);

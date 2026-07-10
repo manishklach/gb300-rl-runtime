@@ -150,8 +150,11 @@ the next one based on the active policy:
 | Policy | Behavior | Use case |
 |--------|----------|----------|
 | `SCHED_FIFO` | Strict queue order | Fairness baseline |
-| `SCHED_SHORTEST_REMAINING` | Pick rollout with fewest remaining tokens | Minimize p99 latency |
-| `SCHED_PREFIX_SHARING` | Prefer rollout sharing prefix with recently scheduled | Maximize KV cache reuse |
+| `SCHED_SHORTEST_REMAINING` | Aspirational — not yet implemented | Minimize p99 latency |
+| `SCHED_PREFIX_SHARING` | Aspirational — not yet implemented | Maximize KV cache reuse |
+
+Note: only `SCHED_FIFO` is operational in v0.4.x. Advanced policies will be
+restored once the scheduler can remove arbitrary entries without losing queued work.
 
 ## Copy-on-Write Prefix KV
 

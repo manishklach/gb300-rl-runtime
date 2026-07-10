@@ -157,6 +157,29 @@ static void test_completion_ring_overflow(void)
     printf("OK\n");
 }
 
+static void test_comp_ring_alloc(void)
+{
+    printf("  test_comp_ring_alloc ... ");
+    CompletionRing *cr = comp_ring_create();
+    assert(cr);
+
+    Completion c_in = { .seq_id = 42, .token_id = 7, .kv_block_offset = 3, .reward_cookie = 0xDEAD, .cycles_taken = 99 };
+    assert(comp_ring_push(cr, &c_in) == 0);
+
+    Completion c_out;
+    int got = comp_ring_poll(cr, &c_out);
+    assert(got);
+    assert(c_out.seq_id == 42);
+    assert(c_out.token_id == 7);
+    assert(c_out.kv_block_offset == 3);
+    assert(c_out.reward_cookie == 0xDEAD);
+    assert(c_out.cycles_taken == 99);
+    assert(cr->overflow.value == 0);
+
+    comp_ring_destroy(cr);
+    printf("OK\n");
+}
+
 static void test_done_ring_overflow(void)
 {
     printf("  test_done_ring_overflow ... ");
@@ -201,6 +224,61 @@ static void test_pipeline_snapshot_and_batch(void)
     pipeline_snapshot(&pipeline, &snap);
     assert(snap.stage_credit_headroom[Q_DECODE] == 1);
     assert(pipeline_stage_target_batch(&pipeline, Q_DECODE, 8) == 1);
+
+    printf("OK\n");
+}
+
+static void test_pipeline_no_work_loss(void)
+{
+    printf("  test_pipeline_no_work_loss ... ");
+    RolloutPipeline pipeline;
+    uint32_t rid0, rid1, rid2, out;
+
+    assert(pipeline_init(&pipeline) == 0);
+    assert(rollout_alloc(&pipeline.slab, &rid0) == 0);
+    assert(rollout_alloc(&pipeline.slab, &rid1) == 0);
+    assert(rollout_alloc(&pipeline.slab, &rid2) == 0);
+
+    pipeline_credits_set(&pipeline, 3, 4, 4, 32);
+    assert(pipeline_try_push(&pipeline, Q_DECODE, rid0) == 0);
+    assert(pipeline_try_push(&pipeline, Q_DECODE, rid1) == 0);
+    assert(pipeline_try_push(&pipeline, Q_DECODE, rid2) == 0);
+    assert(pipeline_occupancy(&pipeline, Q_DECODE) == 3);
+
+    /* FIFO must work */
+    assert(pipeline_schedule(&pipeline, Q_DECODE, &out) == 0);
+    assert(out == rid0);
+    assert(pipeline_occupancy(&pipeline, Q_DECODE) == 2);
+    assert(pipeline_schedule(&pipeline, Q_DECODE, &out) == 0);
+    assert(out == rid1);
+    assert(pipeline_schedule(&pipeline, Q_DECODE, &out) == 0);
+    assert(out == rid2);
+    assert(pipeline_occupancy(&pipeline, Q_DECODE) == 0);
+    assert(pipeline_schedule(&pipeline, Q_DECODE, &out) != 0);
+    pipeline_release(&pipeline, Q_DECODE, 3);
+
+    /* push again, then test that non-FIFO returns error without work loss */
+    assert(pipeline_try_push(&pipeline, Q_DECODE, rid0) == 0);
+    assert(pipeline_try_push(&pipeline, Q_DECODE, rid1) == 0);
+    assert(pipeline_try_push(&pipeline, Q_DECODE, rid2) == 0);
+    assert(pipeline_occupancy(&pipeline, Q_DECODE) == 3);
+
+    /* pipeline_set_schedule_policy rejects non-FIFO; set directly to test rejection */
+    pipeline.policy = SCHED_SHORTEST_REMAINING;
+    assert(pipeline_schedule(&pipeline, Q_DECODE, &out) != 0);
+    assert(pipeline_occupancy(&pipeline, Q_DECODE) == 3);
+    assert(pipeline_set_schedule_policy(&pipeline, SCHED_SHORTEST_REMAINING) != 0);
+
+    pipeline.policy = SCHED_PREFIX_SHARING;
+    assert(pipeline_schedule(&pipeline, Q_DECODE, &out) != 0);
+    assert(pipeline_occupancy(&pipeline, Q_DECODE) == 3);
+    assert(pipeline_set_schedule_policy(&pipeline, SCHED_PREFIX_SHARING) != 0);
+
+    pipeline_set_schedule_policy(&pipeline, SCHED_FIFO);
+    assert(pipeline.policy == SCHED_FIFO);
+    assert(pipeline_schedule(&pipeline, Q_DECODE, &out) == 0);
+    assert(out == rid0);
+    assert(pipeline_occupancy(&pipeline, Q_DECODE) == 2);
 
     printf("OK\n");
 }
@@ -252,8 +330,10 @@ int main(void)
     test_producer_observes_consumer_progress();
     test_ring_no_permanent_full();
     test_completion_ring_overflow();
+    test_comp_ring_alloc();
     test_done_ring_overflow();
     test_pipeline_snapshot_and_batch();
+    test_pipeline_no_work_loss();
     test_decode_descriptor_batch_submit();
     printf("\nAll smoke tests passed.\n");
     return 0;

@@ -40,8 +40,8 @@ typedef struct {
 
 typedef enum {
     SCHED_FIFO,
-    SCHED_SHORTEST_REMAINING,
-    SCHED_PREFIX_SHARING,
+    SCHED_SHORTEST_REMAINING, /* aspirational — not safe; see pipeline.c */
+    SCHED_PREFIX_SHARING,     /* aspirational — not safe; see pipeline.c */
 } SchedulePolicy;
 
 typedef struct {
@@ -71,7 +71,7 @@ int  pipeline_try_push(RolloutPipeline *p, pipeline_q_t q,
                        uint32_t rollout_id);
 void pipeline_release(RolloutPipeline *p, pipeline_q_t q, uint32_t n);
 
-void pipeline_set_schedule_policy(RolloutPipeline *p, SchedulePolicy policy);
+int  pipeline_set_schedule_policy(RolloutPipeline *p, SchedulePolicy policy);
 int  pipeline_schedule(RolloutPipeline *p, pipeline_q_t q, uint32_t *out_id);
 
 uint32_t pipeline_occupancy(const RolloutPipeline *p, pipeline_q_t q);
