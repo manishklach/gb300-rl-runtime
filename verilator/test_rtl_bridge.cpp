@@ -199,7 +199,7 @@ int test_round_trip()
      * C submit -> bridge pack -> RTL -> bridge unpack -> C completion */
     uint16_t rid = 1234;
     uint16_t seq = 7;
-    uint16_t max_tok = 64;
+    uint16_t max_tok = 32;
     uint16_t rew = 9;
     if (!bridge.submit_decode(rid, seq, max_tok, rew)) {
         std::fputs("test_round_trip: submit_decode failed\n", stderr);
